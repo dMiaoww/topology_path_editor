@@ -102,11 +102,69 @@ function makePointCloud(mapData, pointCloudStyle = {}) {
     sizeAttenuation: true,
     transparent: true,
     opacity: 0.82,
+    clippingPlanes: pointCloudStyle.clippingPlanes || [],
+    clipIntersection: false,
   });
 
   const points = new THREE.Points(geometry, material);
   points.userData.kind = 'map';
   return points;
+}
+
+function makePickedPointMarker(point) {
+  const group = new THREE.Group();
+  group.position.set(Number(point?.x) || 0, Number(point?.y) || 0, Number(point?.z) || 0);
+  group.userData = { kind: 'pickedPointMarkerGroup' };
+
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16, 24, 16),
+    new THREE.MeshStandardMaterial({
+      color: '#facc15',
+      emissive: '#22c55e',
+      emissiveIntensity: 0.35,
+      roughness: 0.35,
+      metalness: 0.04,
+    }),
+  );
+  marker.userData = { kind: 'pickedPointMarker', parentGroup: group };
+  group.add(marker);
+
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.25, 0.018, 8, 42),
+    new THREE.MeshBasicMaterial({
+      color: '#22c55e',
+      transparent: true,
+      opacity: 0.9,
+    }),
+  );
+  ring.userData = { kind: 'pickedPointMarkerRing', parentGroup: group };
+  group.add(ring);
+
+  return group;
+}
+
+function makeClippingPlanes(range) {
+  if (!range) return [];
+  return [
+    new THREE.Plane(new THREE.Vector3(1, 0, 0), -Number(range.x?.[0] || 0)),
+    new THREE.Plane(new THREE.Vector3(-1, 0, 0), Number(range.x?.[1] || 0)),
+    new THREE.Plane(new THREE.Vector3(0, 1, 0), -Number(range.y?.[0] || 0)),
+    new THREE.Plane(new THREE.Vector3(0, -1, 0), Number(range.y?.[1] || 0)),
+    new THREE.Plane(new THREE.Vector3(0, 0, 1), -Number(range.z?.[0] || 0)),
+    new THREE.Plane(new THREE.Vector3(0, 0, -1), Number(range.z?.[1] || 0)),
+  ];
+}
+
+function isPointInsideRange(point, range) {
+  if (!range) return true;
+  return (
+    point.x >= Number(range.x?.[0] ?? -Infinity) &&
+    point.x <= Number(range.x?.[1] ?? Infinity) &&
+    point.y >= Number(range.y?.[0] ?? -Infinity) &&
+    point.y <= Number(range.y?.[1] ?? Infinity) &&
+    point.z >= Number(range.z?.[0] ?? -Infinity) &&
+    point.z <= Number(range.z?.[1] ?? Infinity)
+  );
 }
 
 function makeRotationArrow(point, options = {}) {
@@ -418,6 +476,8 @@ export default function TopologyViewer({
   backgroundColor,
   pointCloudColor,
   pointCloudSize,
+  clippingRange,
+  pickedPoint,
   selectedNodeId,
   selectedEdgeKey,
   selectedTempPointKey,
@@ -433,6 +493,8 @@ export default function TopologyViewer({
   onTempPointMoveStart,
   onTempPointMoveEnd,
   onAddNodeAt,
+  onMapPointPick,
+  onPickedPointContextMenu,
 }) {
   const containerRef = useRef(null);
   const sceneRef = useRef(null);
@@ -440,6 +502,8 @@ export default function TopologyViewer({
   const rendererRef = useRef(null);
   const controlsRef = useRef(null);
   const mapObjectRef = useRef(null);
+  const pickedPointMarkerRef = useRef(null);
+  const pickedPointMarkerMeshesRef = useRef([]);
   const topologyGroupRef = useRef(new THREE.Group());
   const nodeMeshesRef = useRef([]);
   const tempPointMeshesRef = useRef([]);
@@ -448,6 +512,7 @@ export default function TopologyViewer({
   const dragRef = useRef(null);
   const propsRef = useRef({
     addNodeMode,
+    clippingRange,
     topology,
     spacing,
     onNodeSelect,
@@ -459,11 +524,14 @@ export default function TopologyViewer({
     onTempPointMoveStart,
     onTempPointMoveEnd,
     onAddNodeAt,
+    onMapPointPick,
+    onPickedPointContextMenu,
   });
 
   useEffect(() => {
     propsRef.current = {
       addNodeMode,
+      clippingRange,
       topology,
       spacing,
       onNodeSelect,
@@ -475,9 +543,12 @@ export default function TopologyViewer({
       onTempPointMoveStart,
       onTempPointMoveEnd,
       onAddNodeAt,
+      onMapPointPick,
+      onPickedPointContextMenu,
     };
   }, [
     addNodeMode,
+    clippingRange,
     topology,
     spacing,
     onNodeSelect,
@@ -489,6 +560,8 @@ export default function TopologyViewer({
     onTempPointMoveStart,
     onTempPointMoveEnd,
     onAddNodeAt,
+    onMapPointPick,
+    onPickedPointContextMenu,
   ]);
 
   useEffect(() => {
@@ -511,6 +584,7 @@ export default function TopologyViewer({
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth || 1, container.clientHeight || 1);
+    renderer.localClippingEnabled = true;
     rendererRef.current = renderer;
     container.appendChild(renderer.domElement);
 
@@ -646,6 +720,32 @@ export default function TopologyViewer({
       }
     };
 
+    const doubleClick = (event) => {
+      const mapObject = mapObjectRef.current;
+      if (!mapObject || propsRef.current.addNodeMode) return;
+      setPointer(event);
+      const hit = raycaster.intersectObject(mapObject, false)[0];
+      if (!hit?.point) return;
+      if (!isPointInsideRange(hit.point, propsRef.current.clippingRange)) return;
+      propsRef.current.onMapPointPick?.({
+        x: hit.point.x,
+        y: hit.point.y,
+        z: hit.point.z,
+        index: hit.index,
+      });
+    };
+
+    const contextMenu = (event) => {
+      setPointer(event);
+      const markerHit = raycaster.intersectObjects(pickedPointMarkerMeshesRef.current, false)[0];
+      if (!markerHit) return;
+      event.preventDefault();
+      propsRef.current.onPickedPointContextMenu?.({
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    };
+
     const pointerMove = (event) => {
       if (!dragRef.current) return;
       setPointer(event);
@@ -694,6 +794,8 @@ export default function TopologyViewer({
     renderer.domElement.addEventListener('pointermove', pointerMove);
     renderer.domElement.addEventListener('pointerup', pointerUp);
     renderer.domElement.addEventListener('pointercancel', pointerUp);
+    renderer.domElement.addEventListener('dblclick', doubleClick);
+    renderer.domElement.addEventListener('contextmenu', contextMenu);
 
     const resizeObserver = new ResizeObserver(() => {
       const width = container.clientWidth || 1;
@@ -719,6 +821,8 @@ export default function TopologyViewer({
       renderer.domElement.removeEventListener('pointermove', pointerMove);
       renderer.domElement.removeEventListener('pointerup', pointerUp);
       renderer.domElement.removeEventListener('pointercancel', pointerUp);
+      renderer.domElement.removeEventListener('dblclick', doubleClick);
+      renderer.domElement.removeEventListener('contextmenu', contextMenu);
       controls.dispose();
       disposeObject(topologyGroup);
       if (mapObjectRef.current) disposeObject(mapObjectRef.current);
@@ -747,11 +851,38 @@ export default function TopologyViewer({
       const mapObject = makePointCloud(mapData, {
         color: pointCloudColor,
         size: pointCloudSize,
+        clippingPlanes: makeClippingPlanes(clippingRange),
       });
       mapObjectRef.current = mapObject;
       scene.add(mapObject);
     }
   }, [mapData, pointCloudColor, pointCloudSize]);
+
+  useEffect(() => {
+    const mapObject = mapObjectRef.current;
+    if (!mapObject?.material) return;
+    mapObject.material.clippingPlanes = makeClippingPlanes(clippingRange);
+    mapObject.material.needsUpdate = true;
+  }, [clippingRange]);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    if (pickedPointMarkerRef.current) {
+      scene.remove(pickedPointMarkerRef.current);
+      disposeObject(pickedPointMarkerRef.current);
+      pickedPointMarkerRef.current = null;
+      pickedPointMarkerMeshesRef.current = [];
+    }
+
+    if (!pickedPoint) return;
+
+    const marker = makePickedPointMarker(pickedPoint);
+    pickedPointMarkerRef.current = marker;
+    pickedPointMarkerMeshesRef.current = marker.children.filter((child) => child.isMesh);
+    scene.add(marker);
+  }, [pickedPoint]);
 
   useEffect(() => {
     const topologyGroup = topologyGroupRef.current;
