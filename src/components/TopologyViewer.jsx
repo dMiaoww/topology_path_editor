@@ -116,31 +116,77 @@ function makePickedPointMarker(point) {
   group.position.set(Number(point?.x) || 0, Number(point?.y) || 0, Number(point?.z) || 0);
   group.userData = { kind: 'pickedPointMarkerGroup' };
 
-  const marker = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 24, 16),
-    new THREE.MeshStandardMaterial({
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3));
+
+  const halo = new THREE.Points(
+    geometry.clone(),
+    new THREE.PointsMaterial({
+      color: '#22c55e',
+      size: 0.13,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.55,
+      depthTest: false,
+    }),
+  );
+  halo.userData = { kind: 'pickedPointMarkerHalo', parentGroup: group };
+  group.add(halo);
+
+  const marker = new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
       color: '#facc15',
-      emissive: '#22c55e',
-      emissiveIntensity: 0.35,
-      roughness: 0.35,
-      metalness: 0.04,
+      size: 0.07,
+      sizeAttenuation: true,
+      depthTest: false,
     }),
   );
   marker.userData = { kind: 'pickedPointMarker', parentGroup: group };
   group.add(marker);
 
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(0.25, 0.018, 8, 42),
-    new THREE.MeshBasicMaterial({
-      color: '#22c55e',
-      transparent: true,
-      opacity: 0.9,
-    }),
-  );
-  ring.userData = { kind: 'pickedPointMarkerRing', parentGroup: group };
-  group.add(ring);
-
   return group;
+}
+
+function getNearestScreenPoint(pointsObject, event, camera, domElement, range) {
+  const position = pointsObject?.geometry?.attributes?.position;
+  if (!position) return null;
+
+  const rect = domElement.getBoundingClientRect();
+  const targetX = event.clientX - rect.left;
+  const targetY = event.clientY - rect.top;
+  const worldPoint = new THREE.Vector3();
+  const screenPoint = new THREE.Vector3();
+  const maxPixelDistance = 10;
+  let best = null;
+  let bestDistanceSq = maxPixelDistance * maxPixelDistance;
+
+  for (let index = 0; index < position.count; index += 1) {
+    worldPoint
+      .set(position.getX(index), position.getY(index), position.getZ(index))
+      .applyMatrix4(pointsObject.matrixWorld);
+
+    if (!isPointInsideRange(worldPoint, range)) continue;
+
+    screenPoint.copy(worldPoint).project(camera);
+    if (screenPoint.z < -1 || screenPoint.z > 1) continue;
+
+    const screenX = ((screenPoint.x + 1) / 2) * rect.width;
+    const screenY = ((1 - screenPoint.y) / 2) * rect.height;
+    const distanceSq = ((screenX - targetX) ** 2) + ((screenY - targetY) ** 2);
+
+    if (distanceSq < bestDistanceSq) {
+      bestDistanceSq = distanceSq;
+      best = {
+        x: worldPoint.x,
+        y: worldPoint.y,
+        z: worldPoint.z,
+        index,
+      };
+    }
+  }
+
+  return best;
 }
 
 function makeClippingPlanes(range) {
@@ -503,7 +549,6 @@ export default function TopologyViewer({
   const controlsRef = useRef(null);
   const mapObjectRef = useRef(null);
   const pickedPointMarkerRef = useRef(null);
-  const pickedPointMarkerMeshesRef = useRef([]);
   const topologyGroupRef = useRef(new THREE.Group());
   const nodeMeshesRef = useRef([]);
   const tempPointMeshesRef = useRef([]);
@@ -513,6 +558,7 @@ export default function TopologyViewer({
   const propsRef = useRef({
     addNodeMode,
     clippingRange,
+    pickedPoint,
     topology,
     spacing,
     onNodeSelect,
@@ -532,6 +578,7 @@ export default function TopologyViewer({
     propsRef.current = {
       addNodeMode,
       clippingRange,
+      pickedPoint,
       topology,
       spacing,
       onNodeSelect,
@@ -549,6 +596,7 @@ export default function TopologyViewer({
   }, [
     addNodeMode,
     clippingRange,
+    pickedPoint,
     topology,
     spacing,
     onNodeSelect,
@@ -723,22 +771,27 @@ export default function TopologyViewer({
     const doubleClick = (event) => {
       const mapObject = mapObjectRef.current;
       if (!mapObject || propsRef.current.addNodeMode) return;
-      setPointer(event);
-      const hit = raycaster.intersectObject(mapObject, false)[0];
-      if (!hit?.point) return;
-      if (!isPointInsideRange(hit.point, propsRef.current.clippingRange)) return;
-      propsRef.current.onMapPointPick?.({
-        x: hit.point.x,
-        y: hit.point.y,
-        z: hit.point.z,
-        index: hit.index,
-      });
+      const pickedVertex = getNearestScreenPoint(
+        mapObject,
+        event,
+        camera,
+        renderer.domElement,
+        propsRef.current.clippingRange,
+      );
+      if (!pickedVertex) return;
+      propsRef.current.onMapPointPick?.(pickedVertex);
     };
 
     const contextMenu = (event) => {
-      setPointer(event);
-      const markerHit = raycaster.intersectObjects(pickedPointMarkerMeshesRef.current, false)[0];
-      if (!markerHit) return;
+      const pickedPoint = propsRef.current.pickedPoint;
+      if (!pickedPoint) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const projected = new THREE.Vector3(pickedPoint.x, pickedPoint.y, pickedPoint.z).project(camera);
+      if (projected.z < -1 || projected.z > 1) return;
+      const screenX = ((projected.x + 1) / 2) * rect.width;
+      const screenY = ((1 - projected.y) / 2) * rect.height;
+      const distance = Math.hypot((event.clientX - rect.left) - screenX, (event.clientY - rect.top) - screenY);
+      if (distance > 12) return;
       event.preventDefault();
       propsRef.current.onPickedPointContextMenu?.({
         clientX: event.clientX,
@@ -826,6 +879,7 @@ export default function TopologyViewer({
       controls.dispose();
       disposeObject(topologyGroup);
       if (mapObjectRef.current) disposeObject(mapObjectRef.current);
+      if (pickedPointMarkerRef.current) disposeObject(pickedPointMarkerRef.current);
       scene.clear();
       renderer.dispose();
       renderer.domElement.remove();
@@ -873,14 +927,12 @@ export default function TopologyViewer({
       scene.remove(pickedPointMarkerRef.current);
       disposeObject(pickedPointMarkerRef.current);
       pickedPointMarkerRef.current = null;
-      pickedPointMarkerMeshesRef.current = [];
     }
 
     if (!pickedPoint) return;
 
     const marker = makePickedPointMarker(pickedPoint);
     pickedPointMarkerRef.current = marker;
-    pickedPointMarkerMeshesRef.current = marker.children.filter((child) => child.isMesh);
     scene.add(marker);
   }, [pickedPoint]);
 

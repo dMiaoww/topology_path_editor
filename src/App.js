@@ -94,6 +94,7 @@ const CLIP_AXES = [
   { key: 'z', label: 'Z' },
 ];
 const DEFAULT_Z_OFFSET = 0.5;
+const DEFAULT_YAW_DEGREES = 0;
 
 function cloneValue(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
@@ -174,6 +175,14 @@ function fallbackNumber(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function getYawQuaternion(yawDegrees) {
+  const yawRadians = ((Number(yawDegrees) || 0) * Math.PI) / 180;
+  return {
+    z: Math.sin(yawRadians / 2),
+    w: Math.cos(yawRadians / 2),
+  };
+}
+
 function getMapBounds(mapData) {
   const positions = mapData?.positions;
   if (!positions?.length) return null;
@@ -202,18 +211,24 @@ function getMapBounds(mapData) {
     : bounds;
 }
 
-function makeGoalCommand(point) {
+function makeGoalCommand(point, yawDegrees = DEFAULT_YAW_DEGREES) {
   const x = formatCommandNumber(point.x);
   const y = formatCommandNumber(point.y);
   const z = formatCommandNumber(point.z);
-  return `ros2 topic pub /goal_pose geometry_msgs/PoseStamped "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'map'}, pose: {position: {x: ${x}, y: ${y}, z: ${z}}, orientation: {w: 1.0}}}"`;
+  const orientation = getYawQuaternion(yawDegrees);
+  const qz = formatCommandNumber(orientation.z);
+  const qw = formatCommandNumber(orientation.w);
+  return `ros2 topic pub /goal_pose geometry_msgs/PoseStamped "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'map'}, pose: {position: {x: ${x}, y: ${y}, z: ${z}}, orientation: {z: ${qz}, w: ${qw}}}}"`;
 }
 
-function makeInitialPoseCommand(point) {
+function makeInitialPoseCommand(point, yawDegrees = DEFAULT_YAW_DEGREES) {
   const x = formatCommandNumber(point.x);
   const y = formatCommandNumber(point.y);
   const z = formatCommandNumber(point.z);
-  return `ros2 topic pub /initialpose geometry_msgs/PoseWithCovarianceStamped "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'map'}, pose: {pose: {position: {x: ${x}, y: ${y}, z: ${z}}, orientation: {w: 1.0}}, covariance: [0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1]}}"`;
+  const orientation = getYawQuaternion(yawDegrees);
+  const qz = formatCommandNumber(orientation.z);
+  const qw = formatCommandNumber(orientation.w);
+  return `ros2 topic pub /initialpose geometry_msgs/PoseWithCovarianceStamped "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'map'}, pose: {pose: {position: {x: ${x}, y: ${y}, z: ${z}}, orientation: {z: ${qz}, w: ${qw}}}, covariance: [0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1]}}"`;
 }
 
 function createSequentialEdges(nodes = [], previousEdges = []) {
@@ -528,6 +543,7 @@ export default function App() {
   const [pointContextMenu, setPointContextMenu] = useState(null);
   const [pointAction, setPointAction] = useState(null);
   const [zOffset, setZOffset] = useState(DEFAULT_Z_OFFSET);
+  const [yawDegrees, setYawDegrees] = useState(DEFAULT_YAW_DEGREES);
   const [activeViewFace, setActiveViewFace] = useState(null);
   const [viewFaceRequest, setViewFaceRequest] = useState({ face: null, nonce: 0 });
   const [newType, setNewType] = useState('');
@@ -603,10 +619,10 @@ export default function App() {
   }, [pickedPoint, zOffset]);
   const generatedCommand = useMemo(() => {
     if (!commandPoint || !pointAction) return '';
-    if (pointAction === 'goal') return makeGoalCommand(commandPoint);
-    if (pointAction === 'initialPose') return makeInitialPoseCommand(commandPoint);
+    if (pointAction === 'goal') return makeGoalCommand(commandPoint, yawDegrees);
+    if (pointAction === 'initialPose') return makeInitialPoseCommand(commandPoint, yawDegrees);
     return '';
-  }, [commandPoint, pointAction]);
+  }, [commandPoint, pointAction, yawDegrees]);
 
   const nodeOptions = useMemo(
     () =>
@@ -699,6 +715,7 @@ export default function App() {
     }
     setPointAction(action);
     setZOffset(DEFAULT_Z_OFFSET);
+    setYawDegrees(DEFAULT_YAW_DEGREES);
     setPointContextMenu(null);
   };
 
@@ -710,6 +727,11 @@ export default function App() {
     if (!generatedCommand) return;
     await navigator.clipboard.writeText(generatedCommand);
     message.success('Command copied');
+  };
+
+  const copyGeneratedCommandAndClose = async () => {
+    await copyGeneratedCommand();
+    closePointAction();
   };
 
   const confirmPointAction = async () => {
@@ -2400,9 +2422,26 @@ export default function App() {
               : 'Nav2 Goal Command'
         }
         open={Boolean(pointAction)}
-        okText={pointAction === 'topoNode' ? 'Add Node' : 'Copy Command'}
-        onOk={confirmPointAction}
         onCancel={closePointAction}
+        footer={
+          pointAction === 'topoNode'
+            ? [
+                <Button key="cancel" onClick={closePointAction}>
+                  Cancel
+                </Button>,
+                <Button key="add" type="primary" onClick={confirmPointAction}>
+                  Add Node
+                </Button>,
+              ]
+            : [
+                <Button key="cancel" onClick={closePointAction}>
+                  Cancel
+                </Button>,
+                <Button key="copy" type="primary" icon={<Copy size={16} />} onClick={copyGeneratedCommandAndClose}>
+                  Copy
+                </Button>,
+              ]
+        }
       >
         <div className="point-action-modal">
           <div className="picked-point-grid">
@@ -2423,11 +2462,23 @@ export default function App() {
           />
           {generatedCommand ? (
             <>
+              <label className="field-label">Yaw angle</label>
+              <InputNumber
+                min={-180}
+                max={180}
+                step={1}
+                precision={2}
+                value={yawDegrees}
+                addonAfter="deg"
+                onChange={(value) => setYawDegrees(Number(value) || 0)}
+                className="full-input"
+              />
+            </>
+          ) : null}
+          {generatedCommand ? (
+            <>
               <label className="field-label">Generated command</label>
               <Input.TextArea value={generatedCommand} autoSize={{ minRows: 4, maxRows: 7 }} readOnly />
-              <Button icon={<Copy size={16} />} onClick={copyGeneratedCommand}>
-                Copy
-              </Button>
             </>
           ) : null}
         </div>
