@@ -4,11 +4,11 @@
 
 <p align="center">
   <a href="README.md">English</a> •
-  <a href="README.zh-CN.md">简体中文</a> •
+  <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
-A single-page React + Three.js application for visualizing point-cloud maps and editing topology nodes, edges, and generated path points.
+A single-page React + Three.js application for visualizing point-cloud maps and editing topology nodes, edges, path points, and path-facing rotations.
 </p>
 
 ## Features
@@ -23,23 +23,27 @@ A single-page React + Three.js application for visualizing point-cloud maps and 
   - `path_points`
 - Display the map and topology in a 3D Three.js scene.
 - Drag topology nodes and update their `x`, `y`, `z` values.
-- Add/delete topology nodes.
+- Add/delete topology nodes from the panel or place a new node directly in the 3D view.
 - Drag nodes in the node list to reorder them and renumber node IDs.
 - Edit a selected node ID manually; if the target ID already exists, that node and following nodes are shifted forward.
 - After nodes are added, deleted, reordered, or renumbered, edges are rebuilt in node order; paths with matching endpoints are preserved, and only new or affected edges get generated points.
 - Add/delete edges.
 - Edit node type values.
 - Default node types:
-  - `charge`
   - `junction`
+  - `charge`
   - `elevator`
   - `stair`
 - Add/delete custom node types.
 - Generate edge `path_points` by interpolation.
 - Adjust interpolation spacing, default `0.2m`.
+- Regenerate all unlocked paths or only the selected unlocked edge.
+- Reverse the full route direction while preserving node IDs and existing path geometry.
 - Lock selected edges so the `path_points` between those two topo points are preserved while editing other content.
 - Add temporary topo points on an edge to control path turns.
 - Edit/delete individual path points.
+- Edit node and path-point rotation as `angle`, `radian`, or `quaternion`.
+- Show rotation arrows for topology nodes and sampled path points in the 3D view.
 - Convert an inner edge path point into a real topo point; the original edge is split at that point.
 - Convert a topo point with exactly two unlocked connected edges back into a normal path point; the adjacent edges are merged.
 - Undo the previous operation.
@@ -52,7 +56,7 @@ A single-page React + Three.js application for visualizing point-cloud maps and 
 ## Install
 
 ```bash
-cd /topology-path-editor
+cd src/topology-path-editor
 npm install
 ```
 
@@ -120,11 +124,11 @@ Expected input/output shape:
 ```json
 {
   "metadata": {
-    "scene": "scene",
+    "scene": "topology-editor",
     "distance_threshold": 0.2,
     "total_topology_nodes": 2,
     "total_edges": 1,
-    "total_path_points": 11
+    "total_path_points": 2
   },
   "topology_nodes": [
     {
@@ -132,6 +136,10 @@ Expected input/output shape:
       "x": 0,
       "y": 0,
       "z": 0,
+      "angle": 0,
+      "radian": 0,
+      "quaternion": [0, 0, 0, 1],
+      "rotation_mode": "path",
       "type": "charge"
     },
     {
@@ -139,6 +147,10 @@ Expected input/output shape:
       "x": 2,
       "y": 0,
       "z": 0,
+      "angle": 0,
+      "radian": 0,
+      "quaternion": [0, 0, 0, 1],
+      "rotation_mode": "path",
       "type": "junction"
     }
   ],
@@ -151,13 +163,33 @@ Expected input/output shape:
           "seq": 1,
           "x": 0,
           "y": 0,
-          "z": 0
+          "z": 0,
+          "angle": 0,
+          "radian": 0,
+          "quaternion": [0, 0, 0, 1]
+        },
+        {
+          "seq": 2,
+          "x": 2,
+          "y": 0,
+          "z": 0,
+          "angle": 0,
+          "radian": 0,
+          "quaternion": [0, 0, 0, 1]
         }
       ]
     }
   ]
 }
 ```
+
+## Rotation Fields
+
+- Nodes and path points use Z-axis yaw rotations.
+- The editor keeps `angle` in degrees, `radian` in radians, and `quaternion` as `[x, y, z, w]` synchronized with each other.
+- Imported path points can use `angle`, `radian`, `rotation_degrees`, `rotation_radians`, `quaternion`, `quat`, or `orientation`.
+- Topology node rotations follow the path direction by default. Manually edited node rotations are exported with `rotation_mode: "manual"`.
+- Generated or regenerated path points get their rotation from the path direction.
 
 ## Temporary Topo Points
 
@@ -187,6 +219,7 @@ Select an edge and enable `Path lock` in the edge panel. While locked:
 - Moving other topo points, adding nodes, or changing temporary points on other edges leaves this edge's `path_points` unchanged.
 - Global path regeneration and spacing changes skip the locked edge.
 - Unlock the edge before editing its temporary topo points, manual path points, or regenerating that edge.
+- Lock state is editor-only and is stripped from exported JSON; the preserved `path_points` remain in the exported edge.
 
 ## Path Point / Topo Point Conversion
 
@@ -201,12 +234,16 @@ Select an edge and enable `Path lock` in the edge panel. While locked:
 1. Load a map file.
 2. Load a topology JSON file.
 3. Select nodes or edges from the left panel or 3D scene.
-4. Drag nodes or temporary topo points in the 3D scene.
-5. Drag nodes inside the `Nodes` list if you need to reorder and renumber node IDs.
-6. Adjust spacing to regenerate interpolated paths.
-7. Use `Undo` or `History` if you need to roll back.
-8. Change the background color, point-cloud size, point-cloud color, or cube-face viewpoint from `Appearance` if needed.
-9. Export the edited topology JSON.
+4. Add nodes from the panel or enable placement mode and click the 3D view.
+5. Drag nodes or temporary topo points in the 3D scene.
+6. Edit node coordinates, type, ID, or `Rotation Z` values from the selected node panel.
+7. Drag nodes inside the `Nodes` list if you need to reorder and renumber node IDs.
+8. Select an edge to edit path points, temporary topo points, locks, or per-point rotations.
+9. Adjust spacing to regenerate interpolated paths.
+10. Use the reverse-direction button in `Path Generation` when the loaded route needs to run the other way.
+11. Use `Undo` or `History` if you need to roll back.
+12. Change the background color, point-cloud size, point-cloud color, or cube-face viewpoint from `Appearance` if needed.
+13. Export the edited topology JSON.
 
 ## Notes
 
@@ -216,3 +253,5 @@ Select an edge and enable `Path lock` in the edge panel. While locked:
 - If an input JSON contains node types outside the default set, those types are added to the type list automatically.
 - Node ID changes update edge `from`/`to` references automatically.
 - Node add/delete/reorder operations rebuild the edge list as an ordered chain of adjacent nodes.
+- Export updates metadata counts and `distance_threshold` from the current spacing value.
+- Regenerated path-point rotations are derived from the path direction in the XY plane.

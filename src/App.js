@@ -16,6 +16,7 @@ import {
   message,
 } from 'antd';
 import {
+  ArrowRightLeft,
   Download,
   FileJson,
   Focus,
@@ -64,6 +65,7 @@ import {
   getPointRotationRadians,
   getYawBetweenPoints,
   normalizePointRotation,
+  regeneratePathPointRotations,
   syncRotationFields,
 } from './helpers/rotation';
 
@@ -450,6 +452,40 @@ function getEdgeIndexesForNode(edges = [], nodeId) {
   }, []);
 }
 
+function reverseRouteTopology(topology, spacing) {
+  let nextSeq = 1;
+  const edges = (topology.edges || []).slice().reverse().map((edge) => {
+    const pathPoints = regeneratePathPointRotations(
+      (edge.path_points || []).slice().reverse().map((point) => {
+        const nextPoint = {
+          ...copyPathPoint(point, nextSeq),
+          seq: nextSeq,
+        };
+        nextSeq += 1;
+        return nextPoint;
+      }),
+    );
+
+    return {
+      ...getBaseEdgeFields(edge),
+      from: Number(edge.to),
+      to: Number(edge.from),
+      [TEMPORARY_POINTS_FIELD]: getTemporaryPoints(edge).slice().reverse(),
+      [LOCKED_EDGE_FIELD]: isPathLocked(edge),
+      path_points: pathPoints,
+    };
+  });
+
+  return refreshTopologyMetadata(
+    {
+      ...topology,
+      topology_nodes: (topology.topology_nodes || []).slice().reverse(),
+      edges,
+    },
+    spacing,
+  );
+}
+
 export default function App() {
   const [topology, setTopology] = useState(blankTopology);
   const [mapData, setMapData] = useState(null);
@@ -541,6 +577,7 @@ export default function App() {
   );
 
   const canUndo = historyState.cursor > 0;
+  const canReverseRoute = topology.topology_nodes.length > 1 || topology.edges.length > 0;
   const currentHistoryEntry = historyState.entries[historyState.cursor];
 
   const applyBackgroundColor = (value) => {
@@ -1122,6 +1159,32 @@ export default function App() {
     commitEditorState('Regenerated paths', nextTopology);
     const lockedCount = topologyRef.current.edges.filter((edge) => isPathLocked(edge)).length;
     message.success(lockedCount ? 'Unlocked paths regenerated; locked edges preserved' : 'Paths regenerated');
+  };
+
+  const reverseRoute = () => {
+    const current = topologyRef.current;
+    if ((current.topology_nodes?.length || 0) <= 1 && !(current.edges || []).length) {
+      message.warning('Load or create a route before reversing it');
+      return;
+    }
+
+    const previousSelectedEdgeIndex = getEdgeIndexByKey(current.edges, selectedEdgeKey);
+    const nextTopology = reverseRouteTopology(current, spacingRef.current);
+    const nextSelectedEdgeIndex = previousSelectedEdgeIndex >= 0
+      ? nextTopology.edges.length - 1 - previousSelectedEdgeIndex
+      : -1;
+    const nextSelectedEdge = nextSelectedEdgeIndex >= 0
+      ? nextTopology.edges[nextSelectedEdgeIndex]
+      : null;
+    const firstEdge = nextTopology.edges[0];
+
+    commitEditorState('Reversed route', nextTopology);
+    setSelectedEdgeKey(nextSelectedEdge ? edgeKey(nextSelectedEdge, nextSelectedEdgeIndex) : null);
+    setSelectedTempPointKey(null);
+    setEdgeFrom(nextSelectedEdge?.from ?? firstEdge?.from ?? nextTopology.topology_nodes[0]?.id ?? null);
+    setEdgeTo(nextSelectedEdge?.to ?? firstEdge?.to ?? nextTopology.topology_nodes[1]?.id ?? null);
+    setAddNodeMode(false);
+    message.success('Route direction reversed');
   };
 
   const regenerateSelectedEdge = () => {
@@ -1738,6 +1801,13 @@ export default function App() {
             />
             <Tooltip title="Regenerate unlocked paths">
               <Button icon={<RefreshCw size={16} />} onClick={regeneratePaths} />
+            </Tooltip>
+            <Tooltip title="Reverse route direction">
+              <Button
+                icon={<ArrowRightLeft size={16} />}
+                onClick={reverseRoute}
+                disabled={!canReverseRoute}
+              />
             </Tooltip>
           </Space.Compact>
         </section>

@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-这是一个基于 React + Three.js 的单页前端应用，用于加载点云地图、编辑拓扑节点、拓扑边以及自动生成的路径点。
+这是一个基于 React + Three.js 的单页前端应用，用于加载点云地图、编辑拓扑节点、拓扑边、路径点以及路径朝向旋转。
 </p>
 
 ## 功能
@@ -23,23 +23,27 @@
   - `path_points`
 - 在 Three.js 3D 场景中显示地图和拓扑结构。
 - 拖拽拓扑节点并实时更新 `x`、`y`、`z` 坐标。
-- 添加或删除拓扑节点。
+- 可从面板添加或删除拓扑节点，也可进入放置模式后在 3D 视图中点击新增节点。
 - 在 Nodes 列表中拖拽节点顺序，并同步重新编号节点 ID。
 - 在选中节点信息框中手动修改节点 ID；如果目标 ID 已存在，该 ID 及后续节点会整体顺延。
 - 添加、删除、排序或重新编号节点后，会按节点顺序重建 edge；已有相同端点的路径会保留，只为新增或受影响的 edge 生成路径点。
 - 添加或删除拓扑边。
 - 修改节点 `type`。
 - 默认节点类型：
-  - `charge`
   - `junction`
+  - `charge`
   - `elevator`
   - `stair`
 - 添加或删除自定义节点类型。
 - 根据 edge 自动插值生成 `path_points`。
 - 调整插值间距，默认 `0.2m`。
+- 可重新生成所有未锁定路径，也可只重新生成当前选中的未锁定 edge。
+- 可一键反转整条路线方向，同时保留原节点 ID 和已有路径形状。
 - 可锁定指定 edge，锁定后该段两个 topo point 之间的 `path_points` 不会被自动重算。
 - 在 edge 上添加临时 topo point，用来控制路径转折。
 - 编辑或删除单个路径点。
+- 可用 `angle`、`radian` 或 `quaternion` 编辑节点和路径点的旋转朝向。
+- 在 3D 视图中显示拓扑节点和采样路径点的朝向箭头。
 - 将 edge 内部的普通路径点转换为真正的 topo point；转换时会在该点拆分原 edge。
 - 将只有两条未锁定连接边的 topo point 转回普通路径点；转换时会合并相邻两条 edge。
 - 撤销上一步操作。
@@ -52,7 +56,7 @@
 ## 安装
 
 ```bash
-cd /topology-path-editor
+cd src/topology-path-editor
 npm install
 ```
 
@@ -120,11 +124,11 @@ CHROME_BIN=/path/to/chrome npm run verify:render
 ```json
 {
   "metadata": {
-    "scene": "scene",
+    "scene": "topology-editor",
     "distance_threshold": 0.2,
     "total_topology_nodes": 2,
     "total_edges": 1,
-    "total_path_points": 11
+    "total_path_points": 2
   },
   "topology_nodes": [
     {
@@ -132,6 +136,10 @@ CHROME_BIN=/path/to/chrome npm run verify:render
       "x": 0,
       "y": 0,
       "z": 0,
+      "angle": 0,
+      "radian": 0,
+      "quaternion": [0, 0, 0, 1],
+      "rotation_mode": "path",
       "type": "charge"
     },
     {
@@ -139,6 +147,10 @@ CHROME_BIN=/path/to/chrome npm run verify:render
       "x": 2,
       "y": 0,
       "z": 0,
+      "angle": 0,
+      "radian": 0,
+      "quaternion": [0, 0, 0, 1],
+      "rotation_mode": "path",
       "type": "junction"
     }
   ],
@@ -151,13 +163,33 @@ CHROME_BIN=/path/to/chrome npm run verify:render
           "seq": 1,
           "x": 0,
           "y": 0,
-          "z": 0
+          "z": 0,
+          "angle": 0,
+          "radian": 0,
+          "quaternion": [0, 0, 0, 1]
+        },
+        {
+          "seq": 2,
+          "x": 2,
+          "y": 0,
+          "z": 0,
+          "angle": 0,
+          "radian": 0,
+          "quaternion": [0, 0, 0, 1]
         }
       ]
     }
   ]
 }
 ```
+
+## 旋转字段
+
+- 节点和路径点使用 Z 轴 yaw 朝向。
+- 编辑器会同步维护角度制 `angle`、弧度制 `radian`，以及 `[x, y, z, w]` 格式的 `quaternion`。
+- 导入的路径点可使用 `angle`、`radian`、`rotation_degrees`、`rotation_radians`、`quaternion`、`quat` 或 `orientation`。
+- 拓扑节点默认跟随路径方向；手动编辑过的节点朝向会以 `rotation_mode: "manual"` 导出。
+- 自动生成或重新生成的路径点朝向来自路径方向。
 
 ## 临时 Topo Point
 
@@ -187,6 +219,7 @@ from node -> temporary topo points -> to node
 - 移动其他 topo point、添加节点、调整其他 edge 的临时点时，这条 edge 的 `path_points` 保持不变。
 - 全局重新生成路径或修改 spacing 时，会跳过锁定 edge。
 - 需要编辑该 edge 的临时 topo point、手动 path point 或重新生成该 edge 时，先关闭锁定。
+- 锁定状态只在编辑器内部使用，导出 JSON 时会移除；锁定期间保留下来的 `path_points` 仍会正常导出。
 
 ## Path Point 与 Topo Point 转换
 
@@ -201,12 +234,16 @@ from node -> temporary topo points -> to node
 1. 加载地图文件。
 2. 加载拓扑 JSON 文件。
 3. 从左侧面板或 3D 场景中选择节点或边。
-4. 在 3D 场景中拖拽节点或临时 topo point。
-5. 需要调整节点编号时，在 `Nodes` 列表中拖拽节点顺序。
-6. 调整 spacing 重新生成插值路径。
-7. 需要回退时使用 `Undo` 或 `History`。
-8. 需要时在 `Appearance` 中修改背景颜色、点云大小、点云颜色或切换 6 面视角。
-9. 导出编辑后的拓扑 JSON。
+4. 可从面板添加节点，也可启用放置模式后在 3D 视图中点击新增节点。
+5. 在 3D 场景中拖拽节点或临时 topo point。
+6. 在选中节点面板中编辑节点坐标、类型、ID 或 `Rotation Z`。
+7. 需要调整节点编号时，在 `Nodes` 列表中拖拽节点顺序。
+8. 选中 edge 后，可编辑路径点、临时 topo point、锁定状态和单个路径点朝向。
+9. 调整 spacing 重新生成插值路径。
+10. 如果加载后的路线方向相反，可在 `Path Generation` 中点击反转方向按钮。
+11. 需要回退时使用 `Undo` 或 `History`。
+12. 需要时在 `Appearance` 中修改背景颜色、点云大小、点云颜色或切换 6 面视角。
+13. 导出编辑后的拓扑 JSON。
 
 ## 注意事项
 
@@ -216,3 +253,5 @@ from node -> temporary topo points -> to node
 - 如果输入 JSON 中包含默认类型之外的节点类型，这些类型会自动加入 type 列表，避免旧数据丢失。
 - 修改节点 ID 时会自动同步更新 edge 的 `from`/`to` 引用。
 - 添加、删除或排序节点时，edge 列表会自动重建为按节点顺序连接的相邻节点链路。
+- 导出时会根据当前 spacing 更新 `distance_threshold` 和 metadata 统计数量。
+- 重新生成的路径点朝向来自 XY 平面内的路径方向。
