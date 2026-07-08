@@ -32,6 +32,7 @@ import {
   Plus,
   RefreshCw,
   Route,
+  Save,
   Spline,
   Copy,
   Target,
@@ -41,7 +42,7 @@ import {
   UploadCloud,
 } from 'lucide-react';
 import TopologyViewer from './components/TopologyViewer';
-import { parseMapFile } from './helpers/fileLoaders';
+import { downloadFilteredPointCloud, parseMapFile } from './helpers/fileLoaders';
 import { getTypeColor } from './helpers/colors';
 import {
   DEFAULT_SPACING,
@@ -571,6 +572,7 @@ export default function App() {
   const activeTypeRef = useRef(activeType);
   const dragStartRef = useRef(null);
   const tempPointDragStartRef = useRef(null);
+  const originalMapFileRef = useRef(null);
 
   useEffect(() => {
     topologyRef.current = topology;
@@ -696,6 +698,23 @@ export default function App() {
   const resetClipping = () => {
     if (!mapBounds) return;
     setClippingRange(cloneValue(mapBounds));
+  };
+
+  const exportFilteredMap = async () => {
+    if (!mapData) return;
+    const key = 'export-map';
+    try {
+      message.loading({ content: 'Filtering map points…', key });
+      // Re-parse the original file without the sampling cap so the export keeps
+      // full-resolution points, then filter by the current clipping range.
+      const source = originalMapFileRef.current
+        ? await parseMapFile(originalMapFileRef.current, { maxPoints: Infinity })
+        : mapData;
+      const saved = downloadFilteredPointCloud(source, clippingRange);
+      message.success({ content: `Saved ${saved.toLocaleString()} filtered points`, key });
+    } catch (error) {
+      message.error({ content: error.message, key });
+    }
   };
 
   const handleMapPointPick = useCallback((point) => {
@@ -863,6 +882,7 @@ export default function App() {
     try {
       message.loading({ content: `Loading ${file.name}`, key: 'map' });
       const parsed = await parseMapFile(file);
+      originalMapFileRef.current = file;
       setMapData(parsed);
       setMapStatus(`${parsed.name} - ${parsed.format} - ${parsed.sampledCount.toLocaleString()} / ${parsed.originalCount.toLocaleString()} points`);
       setFitNonce((value) => value + 1);
@@ -1869,9 +1889,19 @@ export default function App() {
           </div>
           <div className="clip-heading">
             <label className="field-label">XYZ clipping</label>
-            <Button size="small" onClick={resetClipping} disabled={!mapBounds}>
-              Reset
-            </Button>
+            <Space size="small">
+              <Button
+                size="small"
+                icon={<Save size={14} />}
+                onClick={exportFilteredMap}
+                disabled={!mapData}
+              >
+                Save filtered
+              </Button>
+              <Button size="small" onClick={resetClipping} disabled={!mapBounds}>
+                Reset
+              </Button>
+            </Space>
           </div>
           <div className="clip-control-list">
             {CLIP_AXES.map((axis) => {

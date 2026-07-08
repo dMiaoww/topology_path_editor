@@ -308,3 +308,83 @@ function buildMapData(positions, name, format, originalCount) {
     positions: new Float32Array(positions),
   };
 }
+
+function filterPositionsByRange(positions, range) {
+  if (!positions?.length) return new Float32Array(0);
+  if (!range) return positions;
+
+  const xMin = range.x?.[0] ?? -Infinity;
+  const xMax = range.x?.[1] ?? Infinity;
+  const yMin = range.y?.[0] ?? -Infinity;
+  const yMax = range.y?.[1] ?? Infinity;
+  const zMin = range.z?.[0] ?? -Infinity;
+  const zMax = range.z?.[1] ?? Infinity;
+
+  const output = [];
+  for (let index = 0; index < positions.length; index += 3) {
+    const x = positions[index];
+    const y = positions[index + 1];
+    const z = positions[index + 2];
+    if (x >= xMin && x <= xMax && y >= yMin && y <= yMax && z >= zMin && z <= zMax) {
+      output.push(x, y, z);
+    }
+  }
+  return new Float32Array(output);
+}
+
+function formatPcdScalar(value) {
+  if (!Number.isFinite(value)) return '0';
+  const rounded = Math.round(value * 1e6) / 1e6;
+  return rounded.toString();
+}
+
+function buildPcdAscii(positions) {
+  const pointCount = Math.floor(positions.length / 3);
+  const lines = [
+    '# .PCD v0.7 - Point Cloud Data file format',
+    'VERSION 0.7',
+    'FIELDS x y z',
+    'SIZE 4 4 4',
+    'TYPE F F F',
+    'COUNT 1 1 1',
+    `WIDTH ${pointCount}`,
+    'HEIGHT 1',
+    'VIEWPOINT 0 0 0 1 0 0 0',
+    `POINTS ${pointCount}`,
+    'DATA ascii',
+  ];
+
+  for (let index = 0; index < positions.length; index += 3) {
+    lines.push(
+      `${formatPcdScalar(positions[index])} ${formatPcdScalar(positions[index + 1])} ${formatPcdScalar(positions[index + 2])}`,
+    );
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
+function makeFilteredFileName(baseName) {
+  const stripped = (baseName || 'point_cloud').replace(/\.[^.]+$/, '');
+  return `${stripped}_clipped.pcd`;
+}
+
+export function downloadFilteredPointCloud(mapData, range) {
+  const filtered = filterPositionsByRange(mapData?.positions, range);
+  const pointCount = Math.floor(filtered.length / 3);
+  if (!pointCount) {
+    throw new Error('No points fall within the current clipping range.');
+  }
+
+  const pcd = buildPcdAscii(filtered);
+  const fileName = makeFilteredFileName(mapData?.name);
+  const blob = new Blob([pcd], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  return pointCount;
+}
