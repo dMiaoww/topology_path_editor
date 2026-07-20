@@ -8,7 +8,9 @@ import {
   Empty,
   Input,
   InputNumber,
+  Modal,
   Select,
+  Slider,
   Space,
   Switch,
   Tag,
@@ -31,14 +33,17 @@ import {
   Plus,
   RefreshCw,
   Route,
+  Save,
   Spline,
+  Copy,
+  Target,
   Trash2,
   Undo2,
   Unlock,
   UploadCloud,
 } from 'lucide-react';
 import TopologyViewer from './components/TopologyViewer';
-import { parseMapFile } from './helpers/fileLoaders';
+import { downloadFilteredPointCloud, parseMapFile } from './helpers/fileLoaders';
 import { getTypeColor } from './helpers/colors';
 import {
   DEFAULT_SPACING,
@@ -86,6 +91,13 @@ const VIEW_FACE_OPTIONS = [
   { value: 'left', label: 'Left', title: 'Left face (-X)' },
   { value: 'right', label: 'Right', title: 'Right face (+X)' },
 ];
+const CLIP_AXES = [
+  { key: 'x', label: 'X' },
+  { key: 'y', label: 'Y' },
+  { key: 'z', label: 'Z' },
+];
+const DEFAULT_Z_OFFSET = 0.5;
+const DEFAULT_YAW_DEGREES = 0;
 
 function cloneValue(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
@@ -154,6 +166,72 @@ function normalizeHexColor(value) {
   if (/^#[0-9a-fA-F]{6}$/.test(text)) return text.toLowerCase();
   if (/^[0-9a-fA-F]{6}$/.test(text)) return `#${text.toLowerCase()}`;
   return null;
+}
+
+function formatCommandNumber(value) {
+  const rounded = Number(value || 0).toFixed(4);
+  return rounded.replace(/\.?0+$/, '');
+}
+
+function fallbackNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function getYawQuaternion(yawDegrees) {
+  const yawRadians = ((Number(yawDegrees) || 0) * Math.PI) / 180;
+  return {
+    z: Math.sin(yawRadians / 2),
+    w: Math.cos(yawRadians / 2),
+  };
+}
+
+function getMapBounds(mapData) {
+  const positions = mapData?.positions;
+  if (!positions?.length) return null;
+
+  const bounds = {
+    x: [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY],
+    y: [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY],
+    z: [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY],
+  };
+
+  for (let index = 0; index < positions.length; index += 3) {
+    const x = positions[index];
+    const y = positions[index + 1];
+    const z = positions[index + 2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    bounds.x[0] = Math.min(bounds.x[0], x);
+    bounds.x[1] = Math.max(bounds.x[1], x);
+    bounds.y[0] = Math.min(bounds.y[0], y);
+    bounds.y[1] = Math.max(bounds.y[1], y);
+    bounds.z[0] = Math.min(bounds.z[0], z);
+    bounds.z[1] = Math.max(bounds.z[1], z);
+  }
+
+  return Object.values(bounds).some(([min, max]) => !Number.isFinite(min) || !Number.isFinite(max))
+    ? null
+    : bounds;
+}
+
+function makeGoalCommand(point, yawDegrees = DEFAULT_YAW_DEGREES) {
+  const x = formatCommandNumber(point.x);
+  const y = formatCommandNumber(point.y);
+  const z = formatCommandNumber(point.z);
+  const orientation = getYawQuaternion(yawDegrees);
+  const qz = formatCommandNumber(orientation.z);
+  const qw = formatCommandNumber(orientation.w);
+  return `ros2 topic pub /goal_pose geometry_msgs/PoseStamped "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'map'}, pose: {position: {x: ${x}, y: ${y}, z: ${z}}, orientation: {z: ${qz}, w: ${qw}}}}"`;
+}
+
+function makeInitialPoseCommand(point, yawDegrees = DEFAULT_YAW_DEGREES) {
+  const x = formatCommandNumber(point.x);
+  const y = formatCommandNumber(point.y);
+  const z = formatCommandNumber(point.z);
+  const orientation = getYawQuaternion(yawDegrees);
+  const qz = formatCommandNumber(orientation.z);
+  const qw = formatCommandNumber(orientation.w);
+  return `ros2 topic pub /initialpose geometry_msgs/PoseWithCovarianceStamped "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'map'}, pose: {pose: {position: {x: ${x}, y: ${y}, z: ${z}}, orientation: {z: ${qz}, w: ${qw}}}, covariance: [0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1]}}"`;
 }
 
 function createSequentialEdges(nodes = [], previousEdges = []) {
@@ -497,6 +575,12 @@ export default function App() {
   const [pointCloudSize, setPointCloudSize] = useState(DEFAULT_POINT_CLOUD_SIZE);
   const [pointCloudColor, setPointCloudColor] = useState(DEFAULT_POINT_CLOUD_COLOR);
   const [pointCloudColorInput, setPointCloudColorInput] = useState(DEFAULT_POINT_CLOUD_COLOR);
+  const [clippingRange, setClippingRange] = useState(null);
+  const [pickedPoint, setPickedPoint] = useState(null);
+  const [pointContextMenu, setPointContextMenu] = useState(null);
+  const [pointAction, setPointAction] = useState(null);
+  const [zOffset, setZOffset] = useState(DEFAULT_Z_OFFSET);
+  const [yawDegrees, setYawDegrees] = useState(DEFAULT_YAW_DEGREES);
   const [activeViewFace, setActiveViewFace] = useState(null);
   const [viewFaceRequest, setViewFaceRequest] = useState({ face: null, nonce: 0 });
   const [newType, setNewType] = useState('');
@@ -524,6 +608,7 @@ export default function App() {
   const activeTypeRef = useRef(activeType);
   const dragStartRef = useRef(null);
   const tempPointDragStartRef = useRef(null);
+  const originalMapFileRef = useRef(null);
 
   useEffect(() => {
     topologyRef.current = topology;
@@ -561,6 +646,21 @@ export default function App() {
     () => (selectedEdge ? getTemporaryPoints(selectedEdge) : []),
     [selectedEdge],
   );
+  const mapBounds = useMemo(() => getMapBounds(mapData), [mapData]);
+  const commandPoint = useMemo(() => {
+    if (!pickedPoint) return null;
+    return {
+      x: Number(pickedPoint.x) || 0,
+      y: Number(pickedPoint.y) || 0,
+      z: (Number(pickedPoint.z) || 0) + (Number(zOffset) || 0),
+    };
+  }, [pickedPoint, zOffset]);
+  const generatedCommand = useMemo(() => {
+    if (!commandPoint || !pointAction) return '';
+    if (pointAction === 'goal') return makeGoalCommand(commandPoint, yawDegrees);
+    if (pointAction === 'initialPose') return makeInitialPoseCommand(commandPoint, yawDegrees);
+    return '';
+  }, [commandPoint, pointAction, yawDegrees]);
 
   const nodeOptions = useMemo(
     () =>
@@ -579,6 +679,10 @@ export default function App() {
   const canUndo = historyState.cursor > 0;
   const canReverseRoute = topology.topology_nodes.length > 1 || topology.edges.length > 0;
   const currentHistoryEntry = historyState.entries[historyState.cursor];
+
+  useEffect(() => {
+    setClippingRange(mapBounds ? cloneValue(mapBounds) : null);
+  }, [mapBounds]);
 
   const applyBackgroundColor = (value) => {
     const nextColor = normalizeHexColor(value);
@@ -618,6 +722,86 @@ export default function App() {
       face,
       nonce: current.nonce + 1,
     }));
+  };
+
+  const changeClippingAxis = (axis, value) => {
+    if (!mapBounds) return;
+    setClippingRange((current) => ({
+      ...(current || mapBounds),
+      [axis]: value,
+    }));
+  };
+
+  const resetClipping = () => {
+    if (!mapBounds) return;
+    setClippingRange(cloneValue(mapBounds));
+  };
+
+  const exportFilteredMap = async () => {
+    if (!mapData) return;
+    const key = 'export-map';
+    try {
+      message.loading({ content: 'Filtering map points…', key });
+      // Re-parse the original file without the sampling cap so the export keeps
+      // full-resolution points, then filter by the current clipping range.
+      const source = originalMapFileRef.current
+        ? await parseMapFile(originalMapFileRef.current, { maxPoints: Infinity })
+        : mapData;
+      const saved = downloadFilteredPointCloud(source, clippingRange);
+      message.success({ content: `Saved ${saved.toLocaleString()} filtered points`, key });
+    } catch (error) {
+      message.error({ content: error.message, key });
+    }
+  };
+
+  const handleMapPointPick = useCallback((point) => {
+    setPickedPoint(point);
+    setPointContextMenu(null);
+    message.success(`Selected map point ${formatNumber(point.x)}, ${formatNumber(point.y)}, ${formatNumber(point.z)}`);
+  }, []);
+
+  const showPickedPointMenu = useCallback(({ clientX, clientY }) => {
+    setPointContextMenu({ x: clientX, y: clientY });
+  }, []);
+
+  const openPointAction = (action) => {
+    if (!pickedPoint) {
+      message.warning('Double click a point first');
+      return;
+    }
+    setPointAction(action);
+    setZOffset(DEFAULT_Z_OFFSET);
+    setYawDegrees(DEFAULT_YAW_DEGREES);
+    setPointContextMenu(null);
+  };
+
+  const closePointAction = () => {
+    setPointAction(null);
+  };
+
+  const copyGeneratedCommand = async () => {
+    if (!generatedCommand) return;
+    await navigator.clipboard.writeText(generatedCommand);
+    message.success('Command copied');
+  };
+
+  const copyGeneratedCommandAndClose = async () => {
+    await copyGeneratedCommand();
+    closePointAction();
+  };
+
+  const confirmPointAction = async () => {
+    if (!pickedPoint || !commandPoint || !pointAction) return;
+
+    if (pointAction === 'topoNode') {
+      addNode(commandPoint);
+      message.success('Topo node added from selected point');
+      closePointAction();
+      return;
+    }
+
+    await copyGeneratedCommand();
+    closePointAction();
   };
 
   const remapTopologyNodeIds = useCallback((current, nextNodes, idMap) => {
@@ -735,6 +919,7 @@ export default function App() {
     try {
       message.loading({ content: `Loading ${file.name}`, key: 'map' });
       const parsed = await parseMapFile(file);
+      originalMapFileRef.current = file;
       setMapData(parsed);
       setMapStatus(`${parsed.name} - ${parsed.format} - ${parsed.sampledCount.toLocaleString()} / ${parsed.originalCount.toLocaleString()} points`);
       setFitNonce((value) => value + 1);
@@ -1765,6 +1950,64 @@ export default function App() {
               </div>
             </label>
           </div>
+          <div className="clip-heading">
+            <label className="field-label">XYZ clipping</label>
+            <Space size="small">
+              <Button
+                size="small"
+                icon={<Save size={14} />}
+                onClick={exportFilteredMap}
+                disabled={!mapData}
+              >
+                Save filtered
+              </Button>
+              <Button size="small" onClick={resetClipping} disabled={!mapBounds}>
+                Reset
+              </Button>
+            </Space>
+          </div>
+          <div className="clip-control-list">
+            {CLIP_AXES.map((axis) => {
+              const bounds = mapBounds?.[axis.key] || [0, 1];
+              const value = clippingRange?.[axis.key] || bounds;
+              const disabled = !mapBounds || bounds[0] === bounds[1];
+
+              return (
+                <div className="clip-axis-row" key={axis.key}>
+                  <span className="clip-axis-label">{axis.label}</span>
+                  <InputNumber
+                    size="small"
+                    min={bounds[0]}
+                    max={value[1]}
+                    step={0.05}
+                    precision={3}
+                    value={value[0]}
+                    disabled={!mapBounds}
+                    onChange={(nextMin) => changeClippingAxis(axis.key, [fallbackNumber(nextMin, bounds[0]), value[1]])}
+                  />
+                  <Slider
+                    range
+                    min={bounds[0]}
+                    max={bounds[1]}
+                    step={0.01}
+                    value={value}
+                    disabled={disabled}
+                    onChange={(nextValue) => changeClippingAxis(axis.key, nextValue)}
+                  />
+                  <InputNumber
+                    size="small"
+                    min={value[0]}
+                    max={bounds[1]}
+                    step={0.05}
+                    precision={3}
+                    value={value[1]}
+                    disabled={!mapBounds}
+                    onChange={(nextMax) => changeClippingAxis(axis.key, [value[0], fallbackNumber(nextMax, bounds[1])])}
+                  />
+                </div>
+              );
+            })}
+          </div>
           <label className="field-label">Viewpoint</label>
           <div className="view-face-grid" role="group" aria-label="Cube face viewpoint">
             {VIEW_FACE_OPTIONS.map((option) => (
@@ -2221,6 +2464,26 @@ export default function App() {
             message="Placement mode"
           />
         ) : null}
+        {pointContextMenu ? (
+          <div
+            className="point-context-menu"
+            style={{ left: pointContextMenu.x, top: pointContextMenu.y }}
+            onMouseLeave={() => setPointContextMenu(null)}
+          >
+            <button type="button" onClick={() => openPointAction('goal')}>
+              <Target size={15} />
+              <span>Set as Nav2 Goal</span>
+            </button>
+            <button type="button" onClick={() => openPointAction('initialPose')}>
+              <MousePointer2 size={15} />
+              <span>Set as Initial Pose</span>
+            </button>
+            <button type="button" onClick={() => openPointAction('topoNode')}>
+              <GitBranchPlus size={15} />
+              <span>Add as Topo Node</span>
+            </button>
+          </div>
+        ) : null}
         <TopologyViewer
           mapData={mapData}
           topology={topology}
@@ -2228,6 +2491,8 @@ export default function App() {
           backgroundColor={backgroundColor}
           pointCloudColor={pointCloudColor}
           pointCloudSize={pointCloudSize}
+          clippingRange={clippingRange}
+          pickedPoint={pickedPoint}
           selectedNodeId={selectedNodeId}
           selectedEdgeKey={selectedEdgeKey}
           selectedTempPointKey={selectedTempPointKey}
@@ -2243,8 +2508,81 @@ export default function App() {
           onTempPointMoveStart={beginTempPointMove}
           onTempPointMoveEnd={finishTempPointMove}
           onAddNodeAt={addNode}
+          onMapPointPick={handleMapPointPick}
+          onPickedPointContextMenu={showPickedPointMenu}
         />
       </main>
+
+      <Modal
+        title={
+          pointAction === 'topoNode'
+            ? 'Add Topo Node'
+            : pointAction === 'initialPose'
+              ? 'Initial Pose Command'
+              : 'Nav2 Goal Command'
+        }
+        open={Boolean(pointAction)}
+        onCancel={closePointAction}
+        footer={
+          pointAction === 'topoNode'
+            ? [
+                <Button key="cancel" onClick={closePointAction}>
+                  Cancel
+                </Button>,
+                <Button key="add" type="primary" onClick={confirmPointAction}>
+                  Add Node
+                </Button>,
+              ]
+            : [
+                <Button key="cancel" onClick={closePointAction}>
+                  Cancel
+                </Button>,
+                <Button key="copy" type="primary" icon={<Copy size={16} />} onClick={copyGeneratedCommandAndClose}>
+                  Copy
+                </Button>,
+              ]
+        }
+      >
+        <div className="point-action-modal">
+          <div className="picked-point-grid">
+            <span>X {formatNumber(commandPoint?.x)}</span>
+            <span>Y {formatNumber(commandPoint?.y)}</span>
+            <span>Z {formatNumber(commandPoint?.z)}</span>
+          </div>
+          <label className="field-label">Z offset from selected point</label>
+          <InputNumber
+            min={-20}
+            max={20}
+            step={0.05}
+            precision={3}
+            value={zOffset}
+            addonAfter="m"
+            onChange={(value) => setZOffset(Number(value) || 0)}
+            className="full-input"
+          />
+          {generatedCommand ? (
+            <>
+              <label className="field-label">Yaw angle</label>
+              <InputNumber
+                min={-180}
+                max={180}
+                step={1}
+                precision={2}
+                value={yawDegrees}
+                addonAfter="deg"
+                onChange={(value) => setYawDegrees(Number(value) || 0)}
+                className="full-input"
+              />
+            </>
+          ) : null}
+          {generatedCommand ? (
+            <>
+              <label className="field-label">Generated command</label>
+              <Input.TextArea value={generatedCommand} autoSize={{ minRows: 4, maxRows: 7 }} readOnly />
+            </>
+          ) : null}
+        </div>
+      </Modal>
 
       <Drawer
         title="History"
