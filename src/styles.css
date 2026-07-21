@@ -708,6 +708,20 @@ textarea {
   gap: 10px;
 }
 
+.action-command-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #d6dee8;
+  border-radius: 6px;
+  color: #334155;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 750;
+}
+
 .picked-point-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

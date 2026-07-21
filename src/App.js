@@ -84,6 +84,9 @@ const DEFAULT_POINT_CLOUD_SIZE = 0.035;
 const DEFAULT_PATH_COLOR = '#f43f5e';
 const ROTATION_MODE_FIELD = 'rotation_mode';
 const MANUAL_ROTATION_MODE = 'manual';
+const GOAL_COMMAND_TOPIC = 'goalTopic';
+const GOAL_COMMAND_ACTION = 'navAction';
+const DEFAULT_NAV_ACTION_GOAL_ID = 'pcd-test-02';
 const BACKGROUND_PRESETS = ['#0f172a', '#111827', '#1f2937', '#ffffff', '#f8fafc'];
 const VIEW_FACE_OPTIONS = [
   { value: 'top', label: 'Top', title: 'Top face (+Z)' },
@@ -97,6 +100,10 @@ const CLIP_AXES = [
   { key: 'x', label: 'X' },
   { key: 'y', label: 'Y' },
   { key: 'z', label: 'Z' },
+];
+const GOAL_COMMAND_TYPE_OPTIONS = [
+  { value: GOAL_COMMAND_TOPIC, label: 'Topic /goal_pose' },
+  { value: GOAL_COMMAND_ACTION, label: 'Action /platform/nav_action' },
 ];
 const DEFAULT_Z_OFFSET = 0.5;
 const DEFAULT_YAW_DEGREES = 0;
@@ -224,6 +231,18 @@ function makeGoalCommand(point, yawDegrees = DEFAULT_YAW_DEGREES) {
   const qz = formatCommandNumber(orientation.z);
   const qw = formatCommandNumber(orientation.w);
   return `ros2 topic pub /goal_pose geometry_msgs/PoseStamped "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'map'}, pose: {position: {x: ${x}, y: ${y}, z: ${z}}, orientation: {z: ${qz}, w: ${qw}}}}"`;
+}
+
+function makeNavActionCommand(point, yawDegrees = DEFAULT_YAW_DEGREES, goalId = DEFAULT_NAV_ACTION_GOAL_ID, includeFeedback = true) {
+  const x = formatCommandNumber(point.x);
+  const y = formatCommandNumber(point.y);
+  const z = formatCommandNumber(point.z);
+  const actionGoalId = String(goalId || '').trim() || DEFAULT_NAV_ACTION_GOAL_ID;
+  const orientation = getYawQuaternion(yawDegrees);
+  const qz = formatCommandNumber(orientation.z);
+  const qw = formatCommandNumber(orientation.w);
+  const feedbackFlag = includeFeedback ? ' --feedback' : '';
+  return `ros2 action send_goal /platform/nav_action platform_nav_bridge_interfaces/action/NavigateToPose "{goal_id: ${actionGoalId}, frame_id: map, position: {x: ${x}, y: ${y}, z: ${z}}, orientation: {z: ${qz}, w: ${qw}}, use_orientation: true}"${feedbackFlag}`;
 }
 
 function makeInitialPoseCommand(point, yawDegrees = DEFAULT_YAW_DEGREES) {
@@ -586,6 +605,9 @@ export default function App() {
   const [pickedPoint, setPickedPoint] = useState(null);
   const [pointContextMenu, setPointContextMenu] = useState(null);
   const [pointAction, setPointAction] = useState(null);
+  const [goalCommandType, setGoalCommandType] = useState(GOAL_COMMAND_TOPIC);
+  const [navActionGoalId, setNavActionGoalId] = useState(DEFAULT_NAV_ACTION_GOAL_ID);
+  const [navActionFeedback, setNavActionFeedback] = useState(true);
   const [zOffset, setZOffset] = useState(DEFAULT_Z_OFFSET);
   const [yawDegrees, setYawDegrees] = useState(DEFAULT_YAW_DEGREES);
   const [activeViewFace, setActiveViewFace] = useState(null);
@@ -665,10 +687,15 @@ export default function App() {
   }, [pickedPoint, zOffset]);
   const generatedCommand = useMemo(() => {
     if (!commandPoint || !pointAction) return '';
-    if (pointAction === 'goal') return makeGoalCommand(commandPoint, yawDegrees);
+    if (pointAction === 'goal') {
+      if (goalCommandType === GOAL_COMMAND_ACTION) {
+        return makeNavActionCommand(commandPoint, yawDegrees, navActionGoalId, navActionFeedback);
+      }
+      return makeGoalCommand(commandPoint, yawDegrees);
+    }
     if (pointAction === 'initialPose') return makeInitialPoseCommand(commandPoint, yawDegrees);
     return '';
-  }, [commandPoint, pointAction, yawDegrees]);
+  }, [commandPoint, goalCommandType, navActionFeedback, navActionGoalId, pointAction, yawDegrees]);
 
   const nodeOptions = useMemo(
     () =>
@@ -772,12 +799,15 @@ export default function App() {
     setPointContextMenu({ x: clientX, y: clientY });
   }, []);
 
-  const openPointAction = (action) => {
+  const openPointAction = (action, options = {}) => {
     if (!pickedPoint) {
       message.warning('Double click a point first');
       return;
     }
     setPointAction(action);
+    setGoalCommandType(options.goalCommandType || GOAL_COMMAND_TOPIC);
+    setNavActionGoalId(DEFAULT_NAV_ACTION_GOAL_ID);
+    setNavActionFeedback(true);
     setZOffset(DEFAULT_Z_OFFSET);
     setYawDegrees(DEFAULT_YAW_DEGREES);
     setPointContextMenu(null);
@@ -791,11 +821,6 @@ export default function App() {
     if (!generatedCommand) return;
     await navigator.clipboard.writeText(generatedCommand);
     message.success('Command copied');
-  };
-
-  const copyGeneratedCommandAndClose = async () => {
-    await copyGeneratedCommand();
-    closePointAction();
   };
 
   const confirmPointAction = async () => {
@@ -2544,6 +2569,13 @@ export default function App() {
               <Target size={15} />
               <span>Set as Nav2 Goal</span>
             </button>
+            <button
+              type="button"
+              onClick={() => openPointAction('goal', { goalCommandType: GOAL_COMMAND_ACTION })}
+            >
+              <Route size={15} />
+              <span>Set as Nav Action</span>
+            </button>
             <button type="button" onClick={() => openPointAction('initialPose')}>
               <MousePointer2 size={15} />
               <span>Set as Initial Pose</span>
@@ -2591,7 +2623,7 @@ export default function App() {
             ? 'Add Topo Node'
             : pointAction === 'initialPose'
               ? 'Initial Pose Command'
-              : 'Nav2 Goal Command'
+              : 'Navigation Goal Command'
         }
         open={Boolean(pointAction)}
         onCancel={closePointAction}
@@ -2609,7 +2641,7 @@ export default function App() {
                 <Button key="cancel" onClick={closePointAction}>
                   Cancel
                 </Button>,
-                <Button key="copy" type="primary" icon={<Copy size={16} />} onClick={copyGeneratedCommandAndClose}>
+                <Button key="copy" type="primary" icon={<Copy size={16} />} onClick={copyGeneratedCommand}>
                   Copy
                 </Button>,
               ]
@@ -2632,6 +2664,17 @@ export default function App() {
             onChange={(value) => setZOffset(Number(value) || 0)}
             className="full-input"
           />
+          {pointAction === 'goal' ? (
+            <>
+              <label className="field-label">Command type</label>
+              <Select
+                value={goalCommandType}
+                options={GOAL_COMMAND_TYPE_OPTIONS}
+                onChange={setGoalCommandType}
+                className="full-input"
+              />
+            </>
+          ) : null}
           {generatedCommand ? (
             <>
               <label className="field-label">Yaw angle</label>
@@ -2645,6 +2688,25 @@ export default function App() {
                 onChange={(value) => setYawDegrees(Number(value) || 0)}
                 className="full-input"
               />
+            </>
+          ) : null}
+          {pointAction === 'goal' && goalCommandType === GOAL_COMMAND_ACTION ? (
+            <>
+              <label className="field-label">Action goal ID</label>
+              <Input
+                value={navActionGoalId}
+                onChange={(event) => setNavActionGoalId(event.target.value)}
+                className="full-input"
+              />
+              <div className="action-command-row">
+                <span>Feedback</span>
+                <Switch
+                  checked={navActionFeedback}
+                  onChange={setNavActionFeedback}
+                  checkedChildren="On"
+                  unCheckedChildren="Off"
+                />
+              </div>
             </>
           ) : null}
           {generatedCommand ? (
