@@ -41,9 +41,10 @@ import {
   Undo2,
   Unlock,
   UploadCloud,
+  Waypoints,
 } from 'lucide-react';
 import TopologyViewer from './components/TopologyViewer';
-import { downloadFilteredPointCloud, parseMapFile } from './helpers/fileLoaders';
+import { downloadFilteredPointCloud, parseMapFile, parsePathFile } from './helpers/fileLoaders';
 import { getTypeColor } from './helpers/colors';
 import {
   DEFAULT_SPACING,
@@ -80,6 +81,7 @@ const MAX_HISTORY_ENTRIES = 120;
 const DEFAULT_BACKGROUND_COLOR = '#0f172a';
 const DEFAULT_POINT_CLOUD_COLOR = '#38bdf8';
 const DEFAULT_POINT_CLOUD_SIZE = 0.035;
+const DEFAULT_PATH_COLOR = '#f43f5e';
 const ROTATION_MODE_FIELD = 'rotation_mode';
 const MANUAL_ROTATION_MODE = 'manual';
 const BACKGROUND_PRESETS = ['#0f172a', '#111827', '#1f2937', '#ffffff', '#f8fafc'];
@@ -575,6 +577,11 @@ export default function App() {
   const [pointCloudSize, setPointCloudSize] = useState(DEFAULT_POINT_CLOUD_SIZE);
   const [pointCloudColor, setPointCloudColor] = useState(DEFAULT_POINT_CLOUD_COLOR);
   const [pointCloudColorInput, setPointCloudColorInput] = useState(DEFAULT_POINT_CLOUD_COLOR);
+  const [pathData, setPathData] = useState(null);
+  const [pathStatus, setPathStatus] = useState('');
+  const [pathVisible, setPathVisible] = useState(true);
+  const [pathColor, setPathColor] = useState(DEFAULT_PATH_COLOR);
+  const [pathColorInput, setPathColorInput] = useState(DEFAULT_PATH_COLOR);
   const [clippingRange, setClippingRange] = useState(null);
   const [pickedPoint, setPickedPoint] = useState(null);
   const [pointContextMenu, setPointContextMenu] = useState(null);
@@ -602,6 +609,7 @@ export default function App() {
 
   const mapInputRef = useRef(null);
   const jsonInputRef = useRef(null);
+  const pathInputRef = useRef(null);
   const topologyRef = useRef(topology);
   const spacingRef = useRef(spacing);
   const nodeTypesRef = useRef(nodeTypes);
@@ -927,6 +935,37 @@ export default function App() {
     } catch (error) {
       message.error({ content: error.message, key: 'map' });
     }
+  };
+
+  const handlePathFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      message.loading({ content: `Loading ${file.name}`, key: 'path' });
+      const parsed = await parsePathFile(file);
+      setPathData(parsed);
+      setPathStatus(`${parsed.name} - ${parsed.sampledCount.toLocaleString()} points`);
+      setFitNonce((value) => value + 1);
+      message.success({ content: 'Path loaded', key: 'path' });
+    } catch (error) {
+      message.error({ content: error.message, key: 'path' });
+    }
+  };
+
+  const applyPathColor = (value) => {
+    const nextColor = normalizeHexColor(value);
+    if (!nextColor) return;
+    setPathColor(nextColor);
+    setPathColorInput(nextColor);
+  };
+
+  const handlePathColorInput = (event) => {
+    const value = event.target.value;
+    setPathColorInput(value);
+    const nextColor = normalizeHexColor(value);
+    if (nextColor) setPathColor(nextColor);
   };
 
   const handleTopologyFile = async (event) => {
@@ -1878,11 +1917,16 @@ export default function App() {
             <Button block icon={<FileJson size={16} />} onClick={() => jsonInputRef.current?.click()}>
               Load JSON
             </Button>
+            <Button block icon={<Waypoints size={16} />} onClick={() => pathInputRef.current?.click()}>
+              Load Path
+            </Button>
           </Space.Compact>
           <input data-testid="map-input" ref={mapInputRef} hidden type="file" accept=".pcd,.ply,.xyz,.txt,.csv" onChange={handleMapFile} />
           <input data-testid="topology-input" ref={jsonInputRef} hidden type="file" accept=".json,application/json" onChange={handleTopologyFile} />
+          <input data-testid="path-input" ref={pathInputRef} hidden type="file" accept=".csv,.xyz,.txt" onChange={handlePathFile} />
           {mapStatus ? <div className="status-line">{mapStatus}</div> : null}
           {jsonFileName ? <div className="status-line">{jsonFileName}</div> : null}
+          {pathStatus ? <div className="status-line">{pathStatus}</div> : null}
           <Button type="primary" block icon={<Download size={16} />} onClick={exportJson}>
             Export JSON
           </Button>
@@ -1949,6 +1993,32 @@ export default function App() {
                 />
               </div>
             </label>
+          </div>
+          <div className="path-overlay-controls">
+            <div className="path-overlay-head">
+              <span className="field-label">Path overlay</span>
+              <Switch
+                size="small"
+                checked={pathVisible}
+                onChange={setPathVisible}
+                disabled={!pathData}
+              />
+            </div>
+            <div className="background-row">
+              <ColorPicker
+                value={pathColor}
+                showText
+                disabled={!pathData}
+                onChangeComplete={(color) => applyPathColor(color.toHexString())}
+              />
+              <Input
+                value={pathColorInput}
+                onChange={handlePathColorInput}
+                onBlur={() => setPathColorInput(pathColor)}
+                className="background-input"
+                disabled={!pathData}
+              />
+            </div>
           </div>
           <div className="clip-heading">
             <label className="field-label">XYZ clipping</label>
@@ -2493,6 +2563,8 @@ export default function App() {
           pointCloudSize={pointCloudSize}
           clippingRange={clippingRange}
           pickedPoint={pickedPoint}
+          pathData={pathVisible ? pathData : null}
+          pathColor={pathColor}
           selectedNodeId={selectedNodeId}
           selectedEdgeKey={selectedEdgeKey}
           selectedTempPointKey={selectedTempPointKey}

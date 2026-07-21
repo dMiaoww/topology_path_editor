@@ -192,6 +192,24 @@ textarea {
   width: 100%;
 }
 
+.path-overlay-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.path-overlay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.path-overlay-head .field-label {
+  margin: 0;
+}
+
 .view-face-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -388,3 +388,47 @@ export function downloadFilteredPointCloud(mapData, range) {
   URL.revokeObjectURL(url);
   return pointCount;
 }
+
+const DEFAULT_MAX_PATH_POINTS = 200000;
+
+export async function parsePathFile(file, options = {}) {
+  const text = await file.text();
+  return parsePathText(text, file.name, options.maxPoints || DEFAULT_MAX_PATH_POINTS);
+}
+
+function parsePathText(text, name, maxPoints) {
+  const rows = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+  if (!rows.length) throw new Error('Path file is empty.');
+
+  // Drop a header row like "x,y,z,qx,qy,qz,qw" when the first cell is non-numeric.
+  let startIndex = 0;
+  const firstCells = rows[0].split(/[,\s]+/);
+  if (firstCells.length && Number.isNaN(Number(firstCells[0]))) startIndex = 1;
+
+  const dataRows = rows.slice(startIndex);
+  const stride = Math.max(1, Math.ceil(dataRows.length / maxPoints));
+  const positions = [];
+
+  for (let index = 0; index < dataRows.length; index += stride) {
+    const values = dataRows[index].split(/[,\s]+/).map(Number);
+    const x = values[0];
+    const y = values[1];
+    const z = values.length > 2 ? values[2] : 0;
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+      positions.push(x, y, z);
+    }
+  }
+
+  if (!positions.length) throw new Error('No valid points found in path file.');
+
+  return {
+    name,
+    format: 'Path CSV',
+    originalCount: dataRows.length,
+    sampledCount: positions.length / 3,
+    positions: new Float32Array(positions),
+  };
+}

@@ -148,6 +148,42 @@ function makePickedPointMarker(point) {
   return group;
 }
 
+function makePathOverlay(pathData, color = '#f43f5e') {
+  const positions = pathData.positions;
+  const group = new THREE.Group();
+  group.userData = { kind: 'pathOverlay' };
+
+  const lineGeometry = new THREE.BufferGeometry();
+  lineGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const line = new THREE.Line(
+    lineGeometry,
+    new THREE.LineBasicMaterial({
+      color: new THREE.Color(color).getHex(),
+      transparent: true,
+      opacity: 0.95,
+    }),
+  );
+  line.userData = { kind: 'pathOverlayLine' };
+  group.add(line);
+
+  const markerGeometry = new THREE.BufferGeometry();
+  markerGeometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3));
+  const markers = new THREE.Points(
+    markerGeometry,
+    new THREE.PointsMaterial({
+      color: new THREE.Color(color).getHex(),
+      size: 0.055,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.9,
+    }),
+  );
+  markers.userData = { kind: 'pathOverlayMarkers' };
+  group.add(markers);
+
+  return group;
+}
+
 function getNearestScreenPoint(pointsObject, event, camera, domElement, range) {
   const position = pointsObject?.geometry?.attributes?.position;
   if (!position) return null;
@@ -444,7 +480,7 @@ function updateTemporaryPointEdgePreview(drag, position, spacing) {
   applyPositionsToGeometry(drag.previewVisual.markers, positions.slice());
 }
 
-function getContentBounds(mapObject, topologyGroup) {
+function getContentBounds(mapObject, topologyGroup, pathObject) {
   const box = new THREE.Box3();
   let hasContent = false;
 
@@ -456,6 +492,10 @@ function getContentBounds(mapObject, topologyGroup) {
     box.expandByObject(topologyGroup);
     hasContent = true;
   }
+  if (pathObject?.children.length) {
+    box.expandByObject(pathObject);
+    hasContent = true;
+  }
 
   if (!hasContent || box.isEmpty()) {
     box.setFromCenterAndSize(new THREE.Vector3(0, 0, 0), new THREE.Vector3(8, 8, 3));
@@ -464,8 +504,8 @@ function getContentBounds(mapObject, topologyGroup) {
   return box;
 }
 
-function getContentCameraMetrics(mapObject, topologyGroup) {
-  const box = getContentBounds(mapObject, topologyGroup);
+function getContentCameraMetrics(mapObject, topologyGroup, pathObject) {
+  const box = getContentBounds(mapObject, topologyGroup, pathObject);
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z, 2);
@@ -484,8 +524,8 @@ function applyCameraPose({ camera, controls, center, distance, direction, up }) 
   controls.update();
 }
 
-function fitCameraToContent({ camera, controls, mapObject, topologyGroup }) {
-  const { center, maxDim } = getContentCameraMetrics(mapObject, topologyGroup);
+function fitCameraToContent({ camera, controls, mapObject, topologyGroup, pathObject }) {
+  const { center, maxDim } = getContentCameraMetrics(mapObject, topologyGroup, pathObject);
   const distance = maxDim * 1.25;
 
   applyCameraPose({
@@ -498,11 +538,11 @@ function fitCameraToContent({ camera, controls, mapObject, topologyGroup }) {
   });
 }
 
-function applyViewFace({ face, camera, controls, mapObject, topologyGroup }) {
+function applyViewFace({ face, camera, controls, mapObject, topologyGroup, pathObject }) {
   const preset = VIEW_FACE_PRESETS[face];
   if (!preset) return;
 
-  const { center, maxDim } = getContentCameraMetrics(mapObject, topologyGroup);
+  const { center, maxDim } = getContentCameraMetrics(mapObject, topologyGroup, pathObject);
   const distance = maxDim * 1.35;
 
   applyCameraPose({
@@ -524,6 +564,8 @@ export default function TopologyViewer({
   pointCloudSize,
   clippingRange,
   pickedPoint,
+  pathData,
+  pathColor,
   selectedNodeId,
   selectedEdgeKey,
   selectedTempPointKey,
@@ -549,6 +591,7 @@ export default function TopologyViewer({
   const controlsRef = useRef(null);
   const mapObjectRef = useRef(null);
   const pickedPointMarkerRef = useRef(null);
+  const pathOverlayRef = useRef(null);
   const topologyGroupRef = useRef(new THREE.Group());
   const nodeMeshesRef = useRef([]);
   const tempPointMeshesRef = useRef([]);
@@ -880,6 +923,7 @@ export default function TopologyViewer({
       disposeObject(topologyGroup);
       if (mapObjectRef.current) disposeObject(mapObjectRef.current);
       if (pickedPointMarkerRef.current) disposeObject(pickedPointMarkerRef.current);
+      if (pathOverlayRef.current) disposeObject(pathOverlayRef.current);
       scene.clear();
       renderer.dispose();
       renderer.domElement.remove();
@@ -937,6 +981,23 @@ export default function TopologyViewer({
   }, [pickedPoint]);
 
   useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    if (pathOverlayRef.current) {
+      scene.remove(pathOverlayRef.current);
+      disposeObject(pathOverlayRef.current);
+      pathOverlayRef.current = null;
+    }
+
+    if (pathData?.positions?.length) {
+      const overlay = makePathOverlay(pathData, pathColor);
+      pathOverlayRef.current = overlay;
+      scene.add(overlay);
+    }
+  }, [pathData, pathColor]);
+
+  useEffect(() => {
     const topologyGroup = topologyGroupRef.current;
     topologyGroup.children.forEach((child) => disposeObject(child));
     topologyGroup.clear();
@@ -978,6 +1039,7 @@ export default function TopologyViewer({
         controls: controlsRef.current,
         mapObject: mapObjectRef.current,
         topologyGroup: topologyGroupRef.current,
+        pathObject: pathOverlayRef.current,
       });
     });
   }, [fitNonce]);
@@ -991,6 +1053,7 @@ export default function TopologyViewer({
         controls: controlsRef.current,
         mapObject: mapObjectRef.current,
         topologyGroup: topologyGroupRef.current,
+        pathObject: pathOverlayRef.current,
       });
     });
   }, [viewFaceRequest]);
