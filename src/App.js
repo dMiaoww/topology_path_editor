@@ -42,11 +42,9 @@ import {
   Undo2,
   Unlock,
   UploadCloud,
-  Waypoints,
 } from 'lucide-react';
 import TopologyViewer from './components/TopologyViewer';
-import { createPcdFile, downloadFilteredPointCloud, parseMapFile, parsePathFile } from './helpers/fileLoaders';
-import { loadGoalPosesJson } from './helpers/goalPoses';
+import { createPcdFile, downloadFilteredPointCloud, parseMapFile } from './helpers/fileLoaders';
 import { filterVerticalWalls } from './helpers/pclFilter';
 import { getTypeColor } from './helpers/colors';
 import {
@@ -84,7 +82,6 @@ const MAX_HISTORY_ENTRIES = 120;
 const DEFAULT_BACKGROUND_COLOR = '#0f172a';
 const DEFAULT_POINT_CLOUD_COLOR = '#38bdf8';
 const DEFAULT_POINT_CLOUD_SIZE = 0.035;
-const DEFAULT_PATH_COLOR = '#f43f5e';
 const DEFAULT_PCL_NORMAL_RADIUS = 0.3;
 const DEFAULT_PCL_VERTICAL_TOLERANCE = 20;
 const ROTATION_MODE_FIELD = 'rotation_mode';
@@ -613,16 +610,10 @@ export default function App() {
   const [pclVerticalTolerance, setPclVerticalTolerance] = useState(DEFAULT_PCL_VERTICAL_TOLERANCE);
   const [pclFiltering, setPclFiltering] = useState(false);
   const [pclFilterStats, setPclFilterStats] = useState(null);
-  const [pathData, setPathData] = useState(null);
-  const [pathStatus, setPathStatus] = useState('');
-  const [pathVisible, setPathVisible] = useState(true);
-  const [pathColor, setPathColor] = useState(DEFAULT_PATH_COLOR);
-  const [pathColorInput, setPathColorInput] = useState(DEFAULT_PATH_COLOR);
-  const [goalPosesData, setGoalPosesData] = useState(null);
-  const [goalPosesVisible, setGoalPosesVisible] = useState(true);
   const [clippingRange, setClippingRange] = useState(null);
   const [pickedPoint, setPickedPoint] = useState(null);
   const [pointContextMenu, setPointContextMenu] = useState(null);
+  const [nodePairContextMenu, setNodePairContextMenu] = useState(null);
   const [pointAction, setPointAction] = useState(null);
   const [goalCommandType, setGoalCommandType] = useState(GOAL_COMMAND_TOPIC);
   const [navActionGoalId, setNavActionGoalId] = useState(DEFAULT_NAV_ACTION_GOAL_ID);
@@ -633,6 +624,7 @@ export default function App() {
   const [viewFaceRequest, setViewFaceRequest] = useState({ face: null, nonce: 0 });
   const [newType, setNewType] = useState('');
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState([]);
   const [selectedEdgeKey, setSelectedEdgeKey] = useState(null);
   const [selectedTempPointKey, setSelectedTempPointKey] = useState(null);
   const [draggingNodeId, setDraggingNodeId] = useState(null);
@@ -650,8 +642,6 @@ export default function App() {
 
   const mapInputRef = useRef(null);
   const jsonInputRef = useRef(null);
-  const pathInputRef = useRef(null);
-  const goalPosesInputRef = useRef(null);
   const topologyRef = useRef(topology);
   const spacingRef = useRef(spacing);
   const nodeTypesRef = useRef(nodeTypes);
@@ -678,8 +668,10 @@ export default function App() {
   }, [activeType]);
 
   const selectedNode = useMemo(
-    () => topology.topology_nodes.find((node) => Number(node.id) === Number(selectedNodeId)),
-    [topology.topology_nodes, selectedNodeId],
+    () => selectedNodeIds.length > 1
+      ? null
+      : topology.topology_nodes.find((node) => Number(node.id) === Number(selectedNodeId)),
+    [topology.topology_nodes, selectedNodeId, selectedNodeIds.length],
   );
   const selectedEdgeIndex = useMemo(
     () => getEdgeIndexByKey(topology.edges, selectedEdgeKey),
@@ -1007,6 +999,7 @@ export default function App() {
       setNodeTypes(nextNodeTypes);
       setActiveType(entry.snapshot.activeType);
       setHistoryState((current) => ({ ...current, cursor: index }));
+      setSelectedNodeIds([]);
       setSelectedNodeId(nextTopology.topology_nodes[0]?.id ?? null);
       setSelectedEdgeKey(null);
       setSelectedTempPointKey(null);
@@ -1044,57 +1037,6 @@ export default function App() {
     }
   };
 
-  const handlePathFile = async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-
-    try {
-      message.loading({ content: `Loading ${file.name}`, key: 'path' });
-      const parsed = await parsePathFile(file);
-      setPathData(parsed);
-      setPathStatus(`${parsed.name} - ${parsed.sampledCount.toLocaleString()} points`);
-      setFitNonce((value) => value + 1);
-      message.success({ content: 'Path loaded', key: 'path' });
-    } catch (error) {
-      message.error({ content: error.message, key: 'path' });
-    }
-  };
-
-  const handleGoalPosesFile = async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-
-    try {
-      message.loading({ content: `Loading ${file.name}`, key: 'goal-poses' });
-      const parsed = await loadGoalPosesJson(file);
-      setGoalPosesData(parsed);
-      setGoalPosesVisible(true);
-      setFitNonce((value) => value + 1);
-      message.success({
-        content: `Loaded ${parsed.poses.length.toLocaleString()} goal poses`,
-        key: 'goal-poses',
-      });
-    } catch (error) {
-      message.error({ content: error.message, key: 'goal-poses' });
-    }
-  };
-
-  const applyPathColor = (value) => {
-    const nextColor = normalizeHexColor(value);
-    if (!nextColor) return;
-    setPathColor(nextColor);
-    setPathColorInput(nextColor);
-  };
-
-  const handlePathColorInput = (event) => {
-    const value = event.target.value;
-    setPathColorInput(value);
-    const nextColor = normalizeHexColor(value);
-    if (nextColor) setPathColor(nextColor);
-  };
-
   const handleTopologyFile = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -1113,6 +1055,7 @@ export default function App() {
         nodeTypes: discoveredTypes,
         activeType: nextActiveType,
       });
+      setSelectedNodeIds([]);
       setSelectedNodeId(withPaths.topology_nodes[0]?.id ?? null);
       setSelectedEdgeKey(withPaths.edges[0] ? edgeKey(withPaths.edges[0], 0) : null);
       setEdgeFrom(withPaths.edges[0]?.from ?? withPaths.topology_nodes[0]?.id ?? null);
@@ -1125,15 +1068,36 @@ export default function App() {
     }
   };
 
-  const selectNode = useCallback((nodeId) => {
+  const selectNode = useCallback((nodeId, additive = false) => {
+    if (additive && nodeId !== null && nodeId !== undefined) {
+      const numericId = Number(nodeId);
+      setSelectedNodeIds((current) => {
+        const base = current.length
+          ? current
+          : selectedNodeId === null || selectedNodeId === undefined
+            ? []
+            : [Number(selectedNodeId)];
+        if (base.includes(numericId)) return base;
+        return base.length >= 2 ? [base[1], numericId] : [...base, numericId];
+      });
+      setSelectedNodeId(numericId);
+      setSelectedEdgeKey(null);
+      setSelectedTempPointKey(null);
+      setNodePairContextMenu(null);
+      setAddNodeMode(false);
+      return;
+    }
+    setSelectedNodeIds([]);
     setSelectedNodeId(nodeId);
+    setNodePairContextMenu(null);
     setSelectedTempPointKey(null);
     if (nodeId !== null && nodeId !== undefined) {
       setAddNodeMode(false);
     }
-  }, []);
+  }, [selectedNodeId]);
 
   const selectEdge = useCallback((key) => {
+    if (key) setSelectedNodeIds([]);
     setSelectedEdgeKey(key);
     setSelectedTempPointKey(null);
     if (key) setAddNodeMode(false);
@@ -1145,9 +1109,15 @@ export default function App() {
       return;
     }
     setSelectedEdgeKey(key);
+    setSelectedNodeIds([]);
     setSelectedNodeId(null);
     setSelectedTempPointKey(tempPointKey);
     setAddNodeMode(false);
+  }, []);
+
+  const showNodePairContextMenu = useCallback(({ clientX, clientY }) => {
+    setPointContextMenu(null);
+    setNodePairContextMenu({ x: clientX, y: clientY });
   }, []);
 
   const beginNodeMove = useCallback((nodeId) => {
@@ -1155,26 +1125,6 @@ export default function App() {
     dragStartRef.current = node
       ? { id: Number(nodeId), x: Number(node.x) || 0, y: Number(node.y) || 0, z: Number(node.z) || 0 }
       : null;
-  }, []);
-
-  const updateNodePosition = useCallback((nodeId, position) => {
-    const current = topologyRef.current;
-    const next = regenerateAffectedPaths(
-      {
-        ...current,
-        topology_nodes: current.topology_nodes.map((node) =>
-          Number(node.id) === Number(nodeId)
-            ? { ...node, x: position.x, y: position.y, z: position.z }
-            : node,
-        ),
-      },
-      spacingRef.current,
-      getEdgeIndexesForNode(current.edges, nodeId),
-    );
-
-    const normalizedNext = normalizeTopologyNodeRotations(next);
-    topologyRef.current = normalizedNext;
-    setTopology(normalizedNext);
   }, []);
 
   const finishNodeMove = useCallback(
@@ -1298,6 +1248,7 @@ export default function App() {
 
     const nextTopology = remapTopologyNodeIds(current, nextNodes, idMap);
     commitEditorState('Reordered nodes', nextTopology);
+    setSelectedNodeIds([]);
     setSelectedNodeId(idMap.get(sourceNodeId));
     setSelectedEdgeKey(null);
     setSelectedTempPointKey(null);
@@ -1337,6 +1288,7 @@ export default function App() {
 
     const nextTopology = remapTopologyNodeIds(current, nextNodes, idMap);
     commitEditorState(`Changed node #${currentId} id to ${targetId}`, nextTopology);
+    setSelectedNodeIds([]);
     setSelectedNodeId(targetId);
     setSelectedEdgeKey(null);
     setSelectedTempPointKey(null);
@@ -1429,6 +1381,7 @@ export default function App() {
       spacingRef.current,
     );
     commitEditorState(`Added node #${id}`, nextTopology);
+    setSelectedNodeIds([]);
     setSelectedNodeId(id);
     setSelectedEdgeKey(null);
     setSelectedTempPointKey(null);
@@ -1448,6 +1401,7 @@ export default function App() {
       spacingRef.current,
     );
     commitEditorState(`Deleted node #${selectedNodeId}`, nextTopology);
+    setSelectedNodeIds([]);
     setSelectedNodeId(null);
     setSelectedEdgeKey(null);
     setSelectedTempPointKey(null);
@@ -1576,20 +1530,20 @@ export default function App() {
     );
   };
 
-  const addEdge = () => {
-    if (edgeFrom === null || edgeTo === null || Number(edgeFrom) === Number(edgeTo)) return;
+  const addEdgeWithEndpoints = (fromValue, toValue) => {
+    if (fromValue === null || toValue === null || Number(fromValue) === Number(toValue)) return false;
     const current = topologyRef.current;
     const exists = current.edges.some(
       (edge) =>
-        (Number(edge.from) === Number(edgeFrom) && Number(edge.to) === Number(edgeTo)) ||
-        (Number(edge.from) === Number(edgeTo) && Number(edge.to) === Number(edgeFrom)),
+        (Number(edge.from) === Number(fromValue) && Number(edge.to) === Number(toValue)) ||
+        (Number(edge.from) === Number(toValue) && Number(edge.to) === Number(fromValue)),
     );
     if (exists) {
       message.warning('That edge already exists');
-      return;
+      return false;
     }
 
-    const nextEdge = { from: Number(edgeFrom), to: Number(edgeTo), [LOCKED_EDGE_FIELD]: false, path_points: [] };
+    const nextEdge = { from: Number(fromValue), to: Number(toValue), [LOCKED_EDGE_FIELD]: false, path_points: [] };
     const nextIndex = current.edges.length;
 
     const nextTopology = regenerateAffectedPaths(
@@ -1600,26 +1554,58 @@ export default function App() {
       spacingRef.current,
       [nextIndex],
     );
-    commitEditorState(`Added edge ${edgeFrom}->${edgeTo}`, nextTopology);
+    commitEditorState(`Added edge ${fromValue}->${toValue}`, nextTopology);
     setSelectedEdgeKey(edgeKey(nextEdge, nextIndex));
     setSelectedNodeId(null);
+    setSelectedNodeIds([]);
     setSelectedTempPointKey(null);
+    return true;
   };
 
-  const deleteSelectedEdge = () => {
-    if (!selectedEdge) return;
+  const addEdge = () => {
+    addEdgeWithEndpoints(edgeFrom, edgeTo);
+  };
+
+  const addEdgeFromSelectedNodes = () => {
+    if (selectedNodeIds.length !== 2) return;
+    if (addEdgeWithEndpoints(selectedNodeIds[0], selectedNodeIds[1])) {
+      setNodePairContextMenu(null);
+    }
+  };
+
+  const deleteSelectedEdge = useCallback(() => {
     const current = topologyRef.current;
+    const edgeIndex = getEdgeIndexByKey(current.edges, selectedEdgeKey);
+    const edge = edgeIndex >= 0 ? current.edges[edgeIndex] : null;
+    if (!edge) return;
     const nextTopology = refreshTopologyMetadata(
       {
         ...current,
-        edges: current.edges.filter((edge, index) => edgeKey(edge, index) !== selectedEdgeKey),
+        edges: current.edges.filter((_, index) => index !== edgeIndex),
       },
       spacingRef.current,
     );
-    commitEditorState(`Deleted edge ${selectedEdge.from}->${selectedEdge.to}`, nextTopology);
+    commitEditorState(`Deleted edge ${edge.from}->${edge.to}`, nextTopology);
     setSelectedEdgeKey(null);
     setSelectedTempPointKey(null);
-  };
+    message.success(`Deleted edge ${edge.from}->${edge.to}`);
+  }, [commitEditorState, selectedEdgeKey]);
+
+  useEffect(() => {
+    if (!selectedEdgeKey) return undefined;
+
+    const handleDeleteSelectedEdge = (event) => {
+      if (event.defaultPrevented || event.repeat || !['Delete', 'Backspace'].includes(event.key)) return;
+      const target = event.target;
+      const tagName = target?.tagName?.toLowerCase();
+      if (target?.isContentEditable || ['input', 'textarea', 'select'].includes(tagName)) return;
+      event.preventDefault();
+      deleteSelectedEdge();
+    };
+
+    window.addEventListener('keydown', handleDeleteSelectedEdge);
+    return () => window.removeEventListener('keydown', handleDeleteSelectedEdge);
+  }, [deleteSelectedEdge, selectedEdgeKey]);
 
   const updatePathPoint = (pointIndex, field, value) => {
     if (!selectedEdge) return;
@@ -1902,6 +1888,7 @@ export default function App() {
     );
 
     commitEditorState(`Converted path point ${pointIndex + 1} to topo point #${newNodeId}`, nextTopology);
+    setSelectedNodeIds([]);
     setSelectedNodeId(newNodeId);
     setSelectedEdgeKey(null);
     setSelectedTempPointKey(null);
@@ -1985,6 +1972,7 @@ export default function App() {
     );
 
     commitEditorState(`Converted topo point #${currentNode.id} to path point`, nextTopology);
+    setSelectedNodeIds([]);
     setSelectedNodeId(null);
     setSelectedTempPointKey(null);
     setSelectedEdgeKey(mergedEdgeIndex >= 0 ? edgeKey(nextTopology.edges[mergedEdgeIndex], mergedEdgeIndex) : null);
@@ -2044,25 +2032,11 @@ export default function App() {
             <Button block icon={<FileJson size={16} />} onClick={() => jsonInputRef.current?.click()}>
               Load JSON
             </Button>
-            <Button block icon={<Waypoints size={16} />} onClick={() => pathInputRef.current?.click()}>
-              Load Path
-            </Button>
-            <Button block icon={<Target size={16} />} onClick={() => goalPosesInputRef.current?.click()}>
-              Load Goals
-            </Button>
           </div>
           <input data-testid="map-input" ref={mapInputRef} hidden type="file" accept=".pcd,.ply,.xyz,.txt,.csv" onChange={handleMapFile} />
           <input data-testid="topology-input" ref={jsonInputRef} hidden type="file" accept=".json,application/json" onChange={handleTopologyFile} />
-          <input data-testid="path-input" ref={pathInputRef} hidden type="file" accept=".csv,.xyz,.txt" onChange={handlePathFile} />
-          <input data-testid="goal-poses-input" ref={goalPosesInputRef} hidden type="file" accept=".json,application/json" onChange={handleGoalPosesFile} />
           {mapStatus ? <div className="status-line">{mapStatus}</div> : null}
           {jsonFileName ? <div className="status-line">{jsonFileName}</div> : null}
-          {pathStatus ? <div className="status-line">{pathStatus}</div> : null}
-          {goalPosesData ? (
-            <div className="status-line">
-              {goalPosesData.name} - {goalPosesData.poses.length.toLocaleString()} goal poses
-            </div>
-          ) : null}
           <Button type="primary" block icon={<Download size={16} />} onClick={exportJson}>
             Export JSON
           </Button>
@@ -2171,45 +2145,6 @@ export default function App() {
                 Removed {pclFilterStats.removedPoints.toLocaleString()} / {pclFilterStats.inputPoints.toLocaleString()} points
               </div>
             ) : null}
-          </div>
-          <div className="path-overlay-controls">
-            <div className="path-overlay-head">
-              <span className="field-label">Path overlay</span>
-              <Switch
-                size="small"
-                checked={pathVisible}
-                onChange={setPathVisible}
-                disabled={!pathData}
-              />
-            </div>
-            <div className="background-row">
-              <ColorPicker
-                value={pathColor}
-                showText
-                disabled={!pathData}
-                onChangeComplete={(color) => applyPathColor(color.toHexString())}
-              />
-              <Input
-                value={pathColorInput}
-                onChange={handlePathColorInput}
-                onBlur={() => setPathColorInput(pathColor)}
-                className="background-input"
-                disabled={!pathData}
-              />
-            </div>
-          </div>
-          <div className="path-overlay-controls">
-            <div className="path-overlay-head">
-              <span className="field-label">
-                Goal poses{goalPosesData ? ` (${goalPosesData.poses.length})` : ''}
-              </span>
-              <Switch
-                size="small"
-                checked={goalPosesVisible}
-                onChange={setGoalPosesVisible}
-                disabled={!goalPosesData}
-              />
-            </div>
           </div>
           <div className="clip-heading">
             <label className="field-label">XYZ clipping</label>
@@ -2357,7 +2292,9 @@ export default function App() {
               <Button
                 type={addNodeMode ? 'primary' : 'default'}
                 icon={<MousePointer2 size={16} />}
-                onClick={() => setAddNodeMode((value) => !value)}
+                onClick={() => {
+                  setAddNodeMode((value) => !value);
+                }}
               />
             </Tooltip>
             <Button danger icon={<Trash2 size={16} />} onClick={deleteSelectedNode} disabled={!selectedNode}>
@@ -2370,7 +2307,7 @@ export default function App() {
                 <button
                   key={node.id}
                   draggable
-                  className={`list-row node-row ${Number(selectedNodeId) === Number(node.id) ? 'is-active' : ''} ${Number(draggingNodeId) === Number(node.id) ? 'is-dragging' : ''}`}
+                  className={`list-row node-row ${selectedNodeIds.includes(Number(node.id)) || Number(selectedNodeId) === Number(node.id) ? 'is-active' : ''} ${Number(draggingNodeId) === Number(node.id) ? 'is-dragging' : ''}`}
                   onDragStart={(event) => {
                     setDraggingNodeId(Number(node.id));
                     event.dataTransfer.effectAllowed = 'move';
@@ -2382,8 +2319,8 @@ export default function App() {
                   }}
                   onDrop={(event) => reorderNodesByDrag(event, node.id)}
                   onDragEnd={() => setDraggingNodeId(null)}
-                  onClick={() => {
-                    setSelectedNodeId(node.id);
+                  onClick={(event) => {
+                    selectNode(node.id, event.ctrlKey || event.metaKey);
                     setSelectedEdgeKey(null);
                     setSelectedTempPointKey(null);
                   }}
@@ -2525,6 +2462,7 @@ export default function App() {
                     className={`list-row edge-row ${selectedEdgeKey === key ? 'is-active' : ''} ${isPathLocked(edge) ? 'is-locked' : ''}`}
                     onClick={() => {
                       setSelectedEdgeKey(key);
+                      setSelectedNodeIds([]);
                       setSelectedNodeId(null);
                       setSelectedTempPointKey(null);
                       setEdgeFrom(edge.from);
@@ -2550,7 +2488,7 @@ export default function App() {
             )}
           </div>
           <Button danger block icon={<Trash2 size={16} />} onClick={deleteSelectedEdge} disabled={!selectedEdge}>
-            Delete Edge
+            Delete Edge (Del)
           </Button>
         </section>
 
@@ -2595,6 +2533,7 @@ export default function App() {
                       key={key}
                       onClick={() => {
                         setSelectedTempPointKey(key);
+                        setSelectedNodeIds([]);
                         setSelectedNodeId(null);
                       }}
                     >
@@ -2725,6 +2664,14 @@ export default function App() {
             message="Placement mode"
           />
         ) : null}
+        {!addNodeMode && (selectedNode || (selectedTempPointKey && !selectedEdgeLocked)) ? (
+          <Alert
+            className="floating-alert"
+            type="info"
+            showIcon
+            message="Move point: drag the selected point's X, Y, or Z handle"
+          />
+        ) : null}
         {pointContextMenu ? (
           <div
             className="point-context-menu"
@@ -2756,6 +2703,18 @@ export default function App() {
             </button>
           </div>
         ) : null}
+        {nodePairContextMenu && selectedNodeIds.length === 2 ? (
+          <div
+            className="point-context-menu"
+            style={{ left: nodePairContextMenu.x, top: nodePairContextMenu.y }}
+            onMouseLeave={() => setNodePairContextMenu(null)}
+          >
+            <button type="button" onClick={addEdgeFromSelectedNodes}>
+              <GitBranchPlus size={15} />
+              <span>Add Edge ({selectedNodeIds[0]} → {selectedNodeIds[1]})</span>
+            </button>
+          </div>
+        ) : null}
         <TopologyViewer
           mapData={mapData}
           topology={topology}
@@ -2765,9 +2724,7 @@ export default function App() {
           pointCloudSize={pointCloudSize}
           clippingRange={clippingRange}
           pickedPoint={pickedPoint}
-          pathData={pathVisible ? pathData : null}
-          pathColor={pathColor}
-          goalPoses={goalPosesVisible ? goalPosesData?.poses : null}
+          selectedNodeIds={selectedNodeIds}
           selectedNodeId={selectedNodeId}
           selectedEdgeKey={selectedEdgeKey}
           selectedTempPointKey={selectedTempPointKey}
@@ -2775,10 +2732,10 @@ export default function App() {
           fitNonce={fitNonce}
           viewFaceRequest={viewFaceRequest}
           onNodeSelect={selectNode}
+          onNodePairContextMenu={showNodePairContextMenu}
           onEdgeSelect={selectEdge}
           onTempPointSelect={selectTempPoint}
           onNodeMoveStart={beginNodeMove}
-          onNodeMove={updateNodePosition}
           onNodeMoveEnd={finishNodeMove}
           onTempPointMoveStart={beginTempPointMove}
           onTempPointMoveEnd={finishTempPointMove}

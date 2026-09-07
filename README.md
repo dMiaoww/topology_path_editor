@@ -21,14 +21,14 @@ A single-page React + Three.js application for visualizing point-cloud maps and 
   - `topology_nodes`
   - `edges`
   - `path_points`
-- Load `goal_poses.json` files and display each valid pose with its ID and orientation in 3D.
 - Display the map and topology in a 3D Three.js scene.
-- Drag topology nodes and update their `x`, `y`, `z` values.
+- Select a topology node or temporary point, then drag its X/Y/Z transform handle to update its position.
+- Hold `Ctrl`/`Cmd` to select two nodes, then right-click in the 3D view and choose `Add Edge`.
 - Add/delete topology nodes from the panel or place a new node directly in the 3D view.
 - Drag nodes in the node list to reorder them and renumber node IDs.
 - Edit a selected node ID manually; if the target ID already exists, that node and following nodes are shifted forward.
 - After nodes are added, deleted, reordered, or renumbered, edges are rebuilt in node order; paths with matching endpoints are preserved, and only new or affected edges get generated points.
-- Add/delete edges.
+- Add/delete edges; a selected edge can also be removed with `Delete` or `Backspace` when no input is focused.
 - Edit node type values.
 - Default node types:
   - `junction`
@@ -259,15 +259,16 @@ Select an edge and enable `Path lock` in the edge panel. While locked:
 2. Load a topology JSON file.
 3. Select nodes or edges from the left panel or 3D scene.
 4. Add nodes from the panel or enable placement mode and click the 3D view.
-5. Drag nodes or temporary topo points in the 3D scene.
-6. Edit node coordinates, type, ID, or `Rotation Z` values from the selected node panel.
-7. Drag nodes inside the `Nodes` list if you need to reorder and renumber node IDs.
-8. Select an edge to edit path points, temporary topo points, locks, or per-point rotations.
-9. Adjust spacing to regenerate interpolated paths.
-10. Use the reverse-direction button in `Path Generation` when the loaded route needs to run the other way.
-11. Use `Undo` or `History` if you need to roll back.
-12. Change the background color, point-cloud size, point-cloud color, or cube-face viewpoint from `Appearance` if needed.
-13. Export the edited topology JSON.
+5. Select a node or temporary topo point in the 3D scene, then drag only an X/Y/Z arrow handle to move it.
+6. Hold `Ctrl`/`Cmd` to select two nodes, then right-click and choose `Add Edge`.
+7. Edit node coordinates, type, ID, or `Rotation Z` values from the selected node panel.
+8. Drag nodes inside the `Nodes` list if you need to reorder and renumber node IDs.
+9. Select an edge to edit path points, temporary topo points, locks, or per-point rotations.
+10. Adjust spacing to regenerate interpolated paths.
+11. Use the reverse-direction button in `Path Generation` when the loaded route needs to run the other way.
+12. Use `Undo` or `History` if you need to roll back.
+13. Change the background color, point-cloud size, point-cloud color, or cube-face viewpoint from `Appearance` if needed.
+14. Export the edited topology JSON.
 
 ## Notes
 

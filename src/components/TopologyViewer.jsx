@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import {
   edgeKey,
   getTemporaryPoints,
@@ -149,43 +150,8 @@ function makePickedPointMarker(point) {
   return group;
 }
 
-function makePathOverlay(pathData, color = '#f43f5e') {
-  const positions = pathData.positions;
-  const group = new THREE.Group();
-  group.userData = { kind: 'pathOverlay' };
-
-  const lineGeometry = new THREE.BufferGeometry();
-  lineGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  const line = new THREE.Line(
-    lineGeometry,
-    new THREE.LineBasicMaterial({
-      color: new THREE.Color(color).getHex(),
-      transparent: true,
-      opacity: 0.95,
-    }),
-  );
-  line.userData = { kind: 'pathOverlayLine' };
-  group.add(line);
-
-  const markerGeometry = new THREE.BufferGeometry();
-  markerGeometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3));
-  const markers = new THREE.Points(
-    markerGeometry,
-    new THREE.PointsMaterial({
-      color: new THREE.Color(color).getHex(),
-      size: 0.055,
-      sizeAttenuation: true,
-      transparent: true,
-      opacity: 0.9,
-    }),
-  );
-  markers.userData = { kind: 'pathOverlayMarkers' };
-  group.add(markers);
-
-  return group;
-}
-
-function makeGoalPose(pose) {
+function makeGoalPose(pose, selectedGoalPoseId) {
+  const selected = String(selectedGoalPoseId) === String(pose.id);
   const group = new THREE.Group();
   const { position, orientation } = pose;
   group.position.set(position.x, position.y, position.z);
@@ -194,19 +160,19 @@ function makeGoalPose(pose) {
   const marker = new THREE.Mesh(
     new THREE.SphereGeometry(GOAL_POSE_RADIUS, 20, 14),
     new THREE.MeshStandardMaterial({
-      color: '#e879f9',
-      emissive: '#a21caf',
-      emissiveIntensity: 0.32,
+      color: selected ? '#facc15' : '#e879f9',
+      emissive: selected ? '#f59e0b' : '#a21caf',
+      emissiveIntensity: selected ? 0.62 : 0.32,
       roughness: 0.35,
       metalness: 0.08,
     }),
   );
-  marker.userData = { kind: 'goalPose', id: pose.id };
+  marker.userData = { kind: 'goalPose', id: pose.id, parentGroup: group };
   group.add(marker);
 
   const ring = new THREE.Mesh(
     new THREE.TorusGeometry(GOAL_POSE_RADIUS * 1.45, 0.025, 8, 40),
-    new THREE.MeshBasicMaterial({ color: '#f0abfc', depthTest: false }),
+    new THREE.MeshBasicMaterial({ color: selected ? '#fde047' : '#f0abfc', depthTest: false }),
   );
   ring.userData = { kind: 'goalPoseRing', id: pose.id };
   group.add(ring);
@@ -228,15 +194,15 @@ function makeGoalPose(pose) {
   );
   arrow.userData = { kind: 'goalPoseArrow', id: pose.id };
   group.add(arrow);
-  group.add(createNodeLabel(`G${pose.id}`, '#c026d3'));
+  group.add(createNodeLabel(`G${pose.id}`, selected ? '#eab308' : '#c026d3'));
 
   return group;
 }
 
-function makeGoalPosesOverlay(goalPoses = []) {
+function makeGoalPosesOverlay(goalPoses = [], selectedGoalPoseId = null) {
   const group = new THREE.Group();
   group.userData = { kind: 'goalPosesOverlay' };
-  goalPoses.forEach((pose) => group.add(makeGoalPose(pose)));
+  goalPoses.forEach((pose) => group.add(makeGoalPose(pose, selectedGoalPoseId)));
   return group;
 }
 
@@ -338,9 +304,11 @@ function makeRotationArrow(point, options = {}) {
   return arrow;
 }
 
-function makeNode(node, selectedNodeId) {
+function makeNode(node, selectedNodeId, selectedNodeIds = []) {
   const color = getTypeColor(node.type);
-  const selected = Number(selectedNodeId) === Number(node.id);
+  const selected = selectedNodeIds.length
+    ? selectedNodeIds.some((id) => Number(id) === Number(node.id))
+    : Number(selectedNodeId) === Number(node.id);
   const group = new THREE.Group();
   group.position.set(Number(node.x) || 0, Number(node.y) || 0, Number(node.z) || 0);
   group.userData = { kind: 'nodeGroup', id: Number(node.id) };
@@ -360,7 +328,7 @@ function makeNode(node, selectedNodeId) {
   const ring = new THREE.Mesh(
     new THREE.TorusGeometry(NODE_RADIUS * 1.35, 0.018, 8, 36),
     new THREE.MeshBasicMaterial({
-      color: Number(selectedNodeId) === Number(node.id) ? '#111827' : color,
+      color: selected ? '#111827' : color,
       transparent: true,
       opacity: selected ? 0.95 : 0.38,
     }),
@@ -660,59 +628,70 @@ export default function TopologyViewer({
   pointCloudSize,
   clippingRange,
   pickedPoint,
-  pathData,
-  pathColor,
   goalPoses,
+  goalDragMode,
+  selectedGoalPoseId,
   selectedNodeId,
+  selectedNodeIds = [],
   selectedEdgeKey,
   selectedTempPointKey,
   addNodeMode,
   fitNonce,
   viewFaceRequest,
   onNodeSelect,
+  onNodePairContextMenu,
   onEdgeSelect,
   onTempPointSelect,
   onNodeMoveStart,
-  onNodeMove,
   onNodeMoveEnd,
   onTempPointMoveStart,
   onTempPointMoveEnd,
   onAddNodeAt,
   onMapPointPick,
   onPickedPointContextMenu,
+  onGoalPoseSelect,
+  onGoalPoseMoveEnd,
 }) {
   const containerRef = useRef(null);
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
   const rendererRef = useRef(null);
   const controlsRef = useRef(null);
+  const transformControlsRef = useRef(null);
+  const transformTargetRef = useRef(null);
   const mapObjectRef = useRef(null);
   const pickedPointMarkerRef = useRef(null);
-  const pathOverlayRef = useRef(null);
   const goalPosesOverlayRef = useRef(null);
+  const goalPoseMeshesRef = useRef([]);
+  const goalPoseGroupsRef = useRef(new Map());
   const topologyGroupRef = useRef(new THREE.Group());
   const nodeMeshesRef = useRef([]);
+  const nodeGroupsRef = useRef(new Map());
   const tempPointMeshesRef = useRef([]);
+  const tempPointGroupsRef = useRef(new Map());
   const edgeObjectsRef = useRef([]);
   const edgeVisualsRef = useRef(new Map());
-  const dragRef = useRef(null);
   const propsRef = useRef({
     addNodeMode,
     clippingRange,
     pickedPoint,
     topology,
     spacing,
+    selectedNodeIds,
+    goalDragMode,
     onNodeSelect,
+    onNodePairContextMenu,
     onEdgeSelect,
     onTempPointSelect,
     onNodeMoveStart,
-    onNodeMove,
     onNodeMoveEnd,
     onTempPointMoveStart,
     onTempPointMoveEnd,
     onAddNodeAt,
     onMapPointPick,
     onPickedPointContextMenu,
+    onGoalPoseSelect,
+    onGoalPoseMoveEnd,
   });
 
   useEffect(() => {
@@ -722,17 +701,21 @@ export default function TopologyViewer({
       pickedPoint,
       topology,
       spacing,
+      selectedNodeIds,
+      goalDragMode,
       onNodeSelect,
+      onNodePairContextMenu,
       onEdgeSelect,
       onTempPointSelect,
       onNodeMoveStart,
-      onNodeMove,
       onNodeMoveEnd,
       onTempPointMoveStart,
       onTempPointMoveEnd,
       onAddNodeAt,
       onMapPointPick,
       onPickedPointContextMenu,
+      onGoalPoseSelect,
+      onGoalPoseMoveEnd,
     };
   }, [
     addNodeMode,
@@ -740,17 +723,21 @@ export default function TopologyViewer({
     pickedPoint,
     topology,
     spacing,
+    selectedNodeIds,
+    goalDragMode,
     onNodeSelect,
+    onNodePairContextMenu,
     onEdgeSelect,
     onTempPointSelect,
     onNodeMoveStart,
-    onNodeMove,
     onNodeMoveEnd,
     onTempPointMoveStart,
     onTempPointMoveEnd,
     onAddNodeAt,
     onMapPointPick,
     onPickedPointContextMenu,
+    onGoalPoseSelect,
+    onGoalPoseMoveEnd,
   ]);
 
   useEffect(() => {
@@ -783,6 +770,74 @@ export default function TopologyViewer({
     controls.screenSpacePanning = true;
     controlsRef.current = controls;
 
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.setMode('translate');
+    transformControls.setSpace('world');
+    transformControls.setSize(0.78);
+    const transformHelper = transformControls.getHelper();
+    scene.add(transformHelper);
+    transformControlsRef.current = transformControls;
+
+    // Keep translation strictly axis-aligned. The default TransformControls
+    // also exposes XY/YZ/XZ plane handles and a free XYZ center handle, which
+    // makes accidental lateral movement too easy in this editor.
+    const transformGizmo = transformControls._gizmo;
+    const allowedTranslationHandles = new Set(['X', 'Y', 'Z']);
+    const originalGizmoUpdateMatrixWorld = transformGizmo.updateMatrixWorld.bind(transformGizmo);
+    transformGizmo.updateMatrixWorld = (force) => {
+      originalGizmoUpdateMatrixWorld(force);
+      ['gizmo', 'picker'].forEach((collectionName) => {
+        const translate = transformGizmo[collectionName]?.translate;
+        translate?.traverse((handle) => {
+          if (handle.name && !allowedTranslationHandles.has(handle.name)) handle.visible = false;
+        });
+      });
+    };
+
+    const handleTransformDragging = (event) => {
+      controls.enabled = !event.value;
+    };
+
+    const handleTransformMouseDown = () => {
+      const target = transformTargetRef.current;
+      if (!target) return;
+      if (target.kind === 'node') {
+        propsRef.current.onNodeMoveStart?.(target.id);
+      } else if (target.kind === 'temporaryPoint') {
+        propsRef.current.onTempPointMoveStart?.(target.edgeKey, target.pointIndex);
+      }
+    };
+
+    const handleTransformObjectChange = () => {
+      const target = transformTargetRef.current;
+      if (target?.kind === 'temporaryPoint') {
+        updateTemporaryPointEdgePreview(target, target.group.position, propsRef.current.spacing);
+      }
+    };
+
+    const handleTransformMouseUp = () => {
+      const target = transformTargetRef.current;
+      if (!target) return;
+      const position = {
+        x: target.group.position.x,
+        y: target.group.position.y,
+        z: target.group.position.z,
+      };
+
+      if (target.kind === 'goalPose') {
+        propsRef.current.onGoalPoseMoveEnd?.(target.id, position);
+      } else if (target.kind === 'temporaryPoint') {
+        propsRef.current.onTempPointMoveEnd?.(target.edgeKey, target.pointIndex, position);
+      } else if (target.kind === 'node') {
+        propsRef.current.onNodeMoveEnd?.(target.id, position);
+      }
+    };
+
+    transformControls.addEventListener('dragging-changed', handleTransformDragging);
+    transformControls.addEventListener('mouseDown', handleTransformMouseDown);
+    transformControls.addEventListener('objectChange', handleTransformObjectChange);
+    transformControls.addEventListener('mouseUp', handleTransformMouseUp);
+
     const ambient = new THREE.AmbientLight('#ffffff', 0.72);
     scene.add(ambient);
     const directional = new THREE.DirectionalLight('#ffffff', 0.85);
@@ -807,7 +862,6 @@ export default function TopologyViewer({
     const pointer = new THREE.Vector2();
     const plane = new THREE.Plane();
     const planeHit = new THREE.Vector3();
-    const offset = new THREE.Vector3();
 
     const setPointer = (event) => {
       const rect = renderer.domElement.getBoundingClientRect();
@@ -824,71 +878,41 @@ export default function TopologyViewer({
 
     const pointerDown = (event) => {
       if (event.button !== 0) return;
+      if (transformControls.dragging || transformControls.axis) return;
       setPointer(event);
+
+      if (propsRef.current.goalDragMode) {
+        const goalPoseHit = raycaster.intersectObjects(goalPoseMeshesRef.current, false)[0];
+        if (!goalPoseHit) return;
+        const id = goalPoseHit.object.userData.id;
+        propsRef.current.onGoalPoseSelect?.(id);
+        return;
+      }
 
       const tempPointHit = raycaster.intersectObjects(tempPointMeshesRef.current, false)[0];
       if (tempPointHit) {
-        const group = tempPointHit.object.userData.parentGroup;
         const tempPointSelection = {
           edgeKey: tempPointHit.object.userData.edgeKey,
           edgeIndex: tempPointHit.object.userData.edgeIndex,
           pointIndex: tempPointHit.object.userData.pointIndex,
           key: tempPointHit.object.userData.key,
         };
-        if (tempPointHit.object.userData.locked) {
-          propsRef.current.onTempPointSelect?.(
-            tempPointSelection.edgeKey,
-            tempPointSelection.pointIndex,
-            tempPointSelection.key,
-          );
-          return;
-        }
-        propsRef.current.onTempPointMoveStart?.(
+        propsRef.current.onTempPointSelect?.(
           tempPointSelection.edgeKey,
           tempPointSelection.pointIndex,
+          tempPointSelection.key,
         );
-
-        const normal = camera.getWorldDirection(new THREE.Vector3()).normalize();
-        plane.setFromNormalAndCoplanarPoint(normal, group.position);
-        raycaster.ray.intersectPlane(plane, planeHit);
-        offset.copy(planeHit).sub(group.position);
-        const currentTopology = propsRef.current.topology || {};
-        const previewEdge = currentTopology.edges?.[tempPointSelection.edgeIndex];
-        const nodesById = new Map((currentTopology.topology_nodes || []).map((node) => [Number(node.id), node]));
-        dragRef.current = {
-          kind: 'temporaryPoint',
-          edgeKey: tempPointSelection.edgeKey,
-          pointIndex: tempPointSelection.pointIndex,
-          selectionKey: tempPointSelection.key,
-          group,
-          plane,
-          offset: offset.clone(),
-          previewEdge,
-          previewFromNode: previewEdge ? nodesById.get(Number(previewEdge.from)) : null,
-          previewToNode: previewEdge ? nodesById.get(Number(previewEdge.to)) : null,
-          previewTemporaryPoints: previewEdge ? getTemporaryPoints(previewEdge) : [],
-          previewVisual: edgeVisualsRef.current.get(tempPointSelection.edgeKey),
-        };
-        controls.enabled = false;
-        renderer.domElement.setPointerCapture(event.pointerId);
         return;
       }
 
       const nodeHit = raycaster.intersectObjects(nodeMeshesRef.current, false)[0];
       if (nodeHit) {
-        const group = nodeHit.object.userData.parentGroup;
-        propsRef.current.onNodeSelect?.(nodeHit.object.userData.id);
+        propsRef.current.onNodeSelect?.(
+          nodeHit.object.userData.id,
+          event.ctrlKey || event.metaKey,
+        );
         propsRef.current.onEdgeSelect?.(null);
         propsRef.current.onTempPointSelect?.(null, null, null);
-        propsRef.current.onNodeMoveStart?.(nodeHit.object.userData.id);
-
-        const normal = camera.getWorldDirection(new THREE.Vector3()).normalize();
-        plane.setFromNormalAndCoplanarPoint(normal, group.position);
-        raycaster.ray.intersectPlane(plane, planeHit);
-        offset.copy(planeHit).sub(group.position);
-        dragRef.current = { kind: 'node', id: nodeHit.object.userData.id, group, plane, offset: offset.clone() };
-        controls.enabled = false;
-        renderer.domElement.setPointerCapture(event.pointerId);
         return;
       }
 
@@ -911,7 +935,7 @@ export default function TopologyViewer({
 
     const doubleClick = (event) => {
       const mapObject = mapObjectRef.current;
-      if (!mapObject || propsRef.current.addNodeMode) return;
+      if (!mapObject || propsRef.current.addNodeMode || propsRef.current.goalDragMode) return;
       const pickedVertex = getNearestScreenPoint(
         mapObject,
         event,
@@ -924,6 +948,14 @@ export default function TopologyViewer({
     };
 
     const contextMenu = (event) => {
+      if (propsRef.current.selectedNodeIds?.length === 2) {
+        event.preventDefault();
+        propsRef.current.onNodePairContextMenu?.({
+          clientX: event.clientX,
+          clientY: event.clientY,
+        });
+        return;
+      }
       const pickedPoint = propsRef.current.pickedPoint;
       if (!pickedPoint) return;
       const rect = renderer.domElement.getBoundingClientRect();
@@ -940,54 +972,7 @@ export default function TopologyViewer({
       });
     };
 
-    const pointerMove = (event) => {
-      if (!dragRef.current) return;
-      setPointer(event);
-      if (!raycaster.ray.intersectPlane(dragRef.current.plane, planeHit)) return;
-      const next = planeHit.clone().sub(dragRef.current.offset);
-      dragRef.current.group.position.copy(next);
-      if (dragRef.current.kind === 'temporaryPoint') {
-        updateTemporaryPointEdgePreview(dragRef.current, next, propsRef.current.spacing);
-        return;
-      }
-      propsRef.current.onNodeMove?.(dragRef.current.id, {
-        x: next.x,
-        y: next.y,
-        z: next.z,
-      });
-    };
-
-    const pointerUp = (event) => {
-      if (!dragRef.current) return;
-      if (dragRef.current.kind === 'temporaryPoint') {
-        propsRef.current.onTempPointMoveEnd?.(dragRef.current.edgeKey, dragRef.current.pointIndex, {
-          x: dragRef.current.group.position.x,
-          y: dragRef.current.group.position.y,
-          z: dragRef.current.group.position.z,
-        });
-        propsRef.current.onTempPointSelect?.(
-          dragRef.current.edgeKey,
-          dragRef.current.pointIndex,
-          dragRef.current.selectionKey,
-        );
-      } else {
-        propsRef.current.onNodeMoveEnd?.(dragRef.current.id, {
-          x: dragRef.current.group.position.x,
-          y: dragRef.current.group.position.y,
-          z: dragRef.current.group.position.z,
-        });
-      }
-      dragRef.current = null;
-      controls.enabled = true;
-      if (renderer.domElement.hasPointerCapture(event.pointerId)) {
-        renderer.domElement.releasePointerCapture(event.pointerId);
-      }
-    };
-
     renderer.domElement.addEventListener('pointerdown', pointerDown);
-    renderer.domElement.addEventListener('pointermove', pointerMove);
-    renderer.domElement.addEventListener('pointerup', pointerUp);
-    renderer.domElement.addEventListener('pointercancel', pointerUp);
     renderer.domElement.addEventListener('dblclick', doubleClick);
     renderer.domElement.addEventListener('contextmenu', contextMenu);
 
@@ -1012,16 +997,20 @@ export default function TopologyViewer({
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('pointerdown', pointerDown);
-      renderer.domElement.removeEventListener('pointermove', pointerMove);
-      renderer.domElement.removeEventListener('pointerup', pointerUp);
-      renderer.domElement.removeEventListener('pointercancel', pointerUp);
       renderer.domElement.removeEventListener('dblclick', doubleClick);
       renderer.domElement.removeEventListener('contextmenu', contextMenu);
+      transformControls.removeEventListener('dragging-changed', handleTransformDragging);
+      transformControls.removeEventListener('mouseDown', handleTransformMouseDown);
+      transformControls.removeEventListener('objectChange', handleTransformObjectChange);
+      transformControls.removeEventListener('mouseUp', handleTransformMouseUp);
+      transformControls.detach();
+      transformControls.dispose();
+      transformControlsRef.current = null;
+      transformTargetRef.current = null;
       controls.dispose();
       disposeObject(topologyGroup);
       if (mapObjectRef.current) disposeObject(mapObjectRef.current);
       if (pickedPointMarkerRef.current) disposeObject(pickedPointMarkerRef.current);
-      if (pathOverlayRef.current) disposeObject(pathOverlayRef.current);
       if (goalPosesOverlayRef.current) disposeObject(goalPosesOverlayRef.current);
       scene.clear();
       renderer.dispose();
@@ -1083,42 +1072,38 @@ export default function TopologyViewer({
     const scene = sceneRef.current;
     if (!scene) return;
 
-    if (pathOverlayRef.current) {
-      scene.remove(pathOverlayRef.current);
-      disposeObject(pathOverlayRef.current);
-      pathOverlayRef.current = null;
-    }
-
-    if (pathData?.positions?.length) {
-      const overlay = makePathOverlay(pathData, pathColor);
-      pathOverlayRef.current = overlay;
-      scene.add(overlay);
-    }
-  }, [pathData, pathColor]);
-
-  useEffect(() => {
-    const scene = sceneRef.current;
-    if (!scene) return;
-
     if (goalPosesOverlayRef.current) {
+      transformControlsRef.current?.detach();
       scene.remove(goalPosesOverlayRef.current);
       disposeObject(goalPosesOverlayRef.current);
       goalPosesOverlayRef.current = null;
     }
+    goalPoseMeshesRef.current = [];
+    goalPoseGroupsRef.current.clear();
 
     if (goalPoses?.length) {
-      const overlay = makeGoalPosesOverlay(goalPoses);
+      const overlay = makeGoalPosesOverlay(goalPoses, selectedGoalPoseId);
       goalPosesOverlayRef.current = overlay;
+      overlay.children.forEach((group) => {
+        const marker = group.children.find((child) => child.userData.kind === 'goalPose');
+        if (marker) {
+          goalPoseMeshesRef.current.push(marker);
+          goalPoseGroupsRef.current.set(String(marker.userData.id), group);
+        }
+      });
       scene.add(overlay);
     }
-  }, [goalPoses]);
+  }, [goalPoses, selectedGoalPoseId]);
 
   useEffect(() => {
     const topologyGroup = topologyGroupRef.current;
+    transformControlsRef.current?.detach();
     topologyGroup.children.forEach((child) => disposeObject(child));
     topologyGroup.clear();
     nodeMeshesRef.current = [];
+    nodeGroupsRef.current.clear();
     tempPointMeshesRef.current = [];
+    tempPointGroupsRef.current.clear();
     edgeObjectsRef.current = [];
     edgeVisualsRef.current.clear();
 
@@ -1134,18 +1119,69 @@ export default function TopologyViewer({
       getTemporaryPoints(edge).forEach((point, pointIndex) => {
         const tempPointGroup = makeTemporaryPoint(edge, index, point, pointIndex, selectedEdgeKey, selectedTempPointKey);
         topologyGroup.add(tempPointGroup);
+        tempPointGroupsRef.current.set(temporaryPointKey(edge, index, pointIndex), tempPointGroup);
         const diamond = tempPointGroup.children.find((child) => child.userData.kind === 'temporaryPoint');
         if (diamond) tempPointMeshesRef.current.push(diamond);
       });
     });
 
     (topology.topology_nodes || []).forEach((node) => {
-      const nodeGroup = makeNode(node, selectedNodeId);
+      const nodeGroup = makeNode(node, selectedNodeId, selectedNodeIds);
       topologyGroup.add(nodeGroup);
+      nodeGroupsRef.current.set(Number(node.id), nodeGroup);
       const sphere = nodeGroup.children.find((child) => child.userData.kind === 'node');
       if (sphere) nodeMeshesRef.current.push(sphere);
     });
-  }, [topology, selectedNodeId, selectedEdgeKey, selectedTempPointKey]);
+  }, [topology, selectedNodeId, selectedNodeIds, selectedEdgeKey, selectedTempPointKey]);
+
+  useEffect(() => {
+    const transformControls = transformControlsRef.current;
+    if (!transformControls) return;
+
+    transformControls.detach();
+    transformTargetRef.current = null;
+
+    if (goalDragMode && selectedGoalPoseId !== null && selectedGoalPoseId !== undefined) {
+      const group = goalPoseGroupsRef.current.get(String(selectedGoalPoseId));
+      if (!group) return;
+      transformTargetRef.current = { kind: 'goalPose', id: selectedGoalPoseId, group };
+      transformControls.attach(group);
+      return;
+    }
+
+    if (selectedTempPointKey) {
+      const group = tempPointGroupsRef.current.get(selectedTempPointKey);
+      if (!group || group.userData.locked) return;
+      const currentTopology = topology || {};
+      const edgeIndex = group.userData.edgeIndex;
+      const previewEdge = currentTopology.edges?.[edgeIndex];
+      const nodesById = new Map(
+        (currentTopology.topology_nodes || []).map((node) => [Number(node.id), node]),
+      );
+      transformTargetRef.current = {
+        kind: 'temporaryPoint',
+        edgeKey: group.userData.edgeKey,
+        pointIndex: group.userData.pointIndex,
+        group,
+        previewEdge,
+        previewFromNode: previewEdge ? nodesById.get(Number(previewEdge.from)) : null,
+        previewToNode: previewEdge ? nodesById.get(Number(previewEdge.to)) : null,
+        previewTemporaryPoints: previewEdge ? getTemporaryPoints(previewEdge) : [],
+        previewVisual: edgeVisualsRef.current.get(group.userData.edgeKey),
+      };
+      transformControls.attach(group);
+      return;
+    }
+
+    if (selectedNodeIds.length > 1) return;
+
+    if (selectedNodeId !== null && selectedNodeId !== undefined) {
+      const group = nodeGroupsRef.current.get(Number(selectedNodeId));
+      if (!group) return;
+      transformTargetRef.current = { kind: 'node', id: Number(selectedNodeId), group };
+      transformControls.attach(group);
+    }
+  }, [goalDragMode, goalPoses, selectedGoalPoseId, selectedNodeId, selectedNodeIds, selectedTempPointKey, topology]);
 
   useEffect(() => {
     if (!fitNonce || !cameraRef.current || !controlsRef.current) return;
@@ -1155,7 +1191,6 @@ export default function TopologyViewer({
         controls: controlsRef.current,
         mapObject: mapObjectRef.current,
         topologyGroup: topologyGroupRef.current,
-        pathObject: pathOverlayRef.current,
         goalPosesObject: goalPosesOverlayRef.current,
       });
     });
@@ -1170,11 +1205,15 @@ export default function TopologyViewer({
         controls: controlsRef.current,
         mapObject: mapObjectRef.current,
         topologyGroup: topologyGroupRef.current,
-        pathObject: pathOverlayRef.current,
         goalPosesObject: goalPosesOverlayRef.current,
       });
     });
   }, [viewFaceRequest]);
 
-  return <div ref={containerRef} className={`viewer-canvas ${addNodeMode ? 'is-placing' : ''}`} />;
+  return (
+    <div
+      ref={containerRef}
+      className={`viewer-canvas ${addNodeMode ? 'is-placing' : ''} ${goalDragMode ? 'is-dragging-goals' : ''}`}
+    />
+  );
 }
